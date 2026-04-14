@@ -1,4 +1,4 @@
-"""Backtest simulator for betting strategies."""
+"""賭け戦略のためのバックテストシミュレーター。"""
 
 from __future__ import annotations
 
@@ -15,17 +15,17 @@ def simulate_backtest(
     prob_col: str = "pred_prob",
     odds_col: str = "win_odds",
 ) -> dict:
-    """Run a backtest simulation on selected bet horses.
+    """選定された賭け対象馬についてバックテストを実行する。
 
     Args:
-        bet_df: DataFrame with one row per race, must have:
-            pred_prob, win_odds, rank, error_code columns
-        cfg: Config dict with strategy parameters
-        prob_col: Column for calibrated probability
-        odds_col: Column for odds
+        bet_df: 1レース1行の DataFrame。以下の列が必要:
+            pred_prob, win_odds, rank, error_code
+        cfg: 戦略パラメータを含む設定辞書
+        prob_col: キャリブレーション済み確率の列名
+        odds_col: オッズの列名
 
     Returns:
-        Dictionary with simulation results and bankroll history
+        シミュレーション結果とバンクロール履歴を含む辞書
     """
     strat = cfg["strategy"]
     bankroll = float(strat["initial_bankroll"])
@@ -34,7 +34,7 @@ def simulate_backtest(
     min_bet = strat["min_bet"]
     bet_sizing = strat.get("bet_sizing", "kelly")
 
-    # Tier parameters (for Frieren method)
+    # ティアパラメータ (Frieren 方式用)
     tier_kwargs = {
         k: strat[k] for k in [
             "tier_low_threshold", "tier_mid_threshold", "tier_high_threshold",
@@ -46,12 +46,12 @@ def simulate_backtest(
     bets = []
 
     for idx, row in bet_df.iterrows():
-        # Skip cancelled/excluded races
+        # 中止・除外レースはスキップ
         if "error_code" in row and row["error_code"] in ERROR_CODES_EXCLUDE:
             continue
 
         prob = row[prob_col]
-        # Estimate show odds as win_odds / 3
+        # 複勝オッズを win_odds / 3 として推定
         show_odds_est = row[odds_col] / 3.0
         hit = (row["rank"] >= 1) and (row["rank"] <= 3)
 
@@ -68,7 +68,7 @@ def simulate_backtest(
         if bet_amount <= 0:
             continue
 
-        # Update bankroll
+        # バンクロールを更新
         if hit:
             payout = bet_amount * show_odds_est
         else:
@@ -95,7 +95,7 @@ def simulate_backtest(
     total_wagered = bets_df["bet_amount"].sum() if n_bets > 0 else 0
     total_payout = bets_df["payout"].sum() if n_bets > 0 else 0
 
-    # Max drawdown
+    # 最大ドローダウン
     peak = initial
     max_dd = 0.0
     for b in history:
@@ -124,7 +124,7 @@ def simulate_backtest(
 
 
 def print_backtest_summary(results: dict) -> None:
-    """Print formatted backtest results."""
+    """整形されたバックテスト結果を出力する。"""
     print("=" * 60)
     print("BACKTEST RESULTS")
     print("=" * 60)
@@ -142,7 +142,7 @@ def print_backtest_summary(results: dict) -> None:
 
 
 def plot_bankroll_history(results: dict, save_path: str | None = None) -> None:
-    """Plot bankroll over time."""
+    """時系列のバンクロール推移をプロットする。"""
     import matplotlib.pyplot as plt
 
     history = results["bankroll_history"]

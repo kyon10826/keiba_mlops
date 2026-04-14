@@ -1,4 +1,4 @@
-"""Scraping modules for netkeiba data collection."""
+"""netkeibaのデータ収集のためのスクレイピングモジュール群。"""
 
 from src.scraper.results import scrape_race_results, save_results
 from src.scraper.race_card import (

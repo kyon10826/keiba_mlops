@@ -1,4 +1,4 @@
-"""Horse selection logic for betting."""
+"""馬券購入のための馬選定ロジック。"""
 
 from __future__ import annotations
 
@@ -12,57 +12,57 @@ def select_bet_horse(
     top_n_popularity: int = 3,
     min_expected_value: float = 1.0,
 ) -> pd.Series | None:
-    """Select the best horse to bet on for a single race.
+    """1レースにおいて最も賭けるべき馬を選定する。
 
-    Strategy:
-        1. Compute expected value = calibrated probability * show odds estimate
-        2. Filter to horses with EV > min_expected_value
-        3. Among top-N popularity, pick the horse with highest jockey_lcb95
-        4. Fallback to sire_lcb95 if no jockey match
-        5. Skip race if no horse meets EV threshold
+    戦略:
+        1. 期待値 = キャリブレーション済み確率 * 複勝オッズ推定値 を計算
+        2. 期待値が min_expected_value を超える馬に絞り込む
+        3. 人気上位 N 頭の中から jockey_lcb95 が最大の馬を選ぶ
+        4. 該当する騎手がいなければ sire_lcb95 にフォールバック
+        5. 期待値閾値を満たす馬がなければそのレースをスキップ
 
     Args:
-        race_data: DataFrame for a single race with pred_prob, odds, and stats columns
-        prob_col: Column name for calibrated probability
-        odds_col: Column name for odds
-        top_n_popularity: How many popular horses to consider
-        min_expected_value: Minimum expected value threshold
+        race_data: 1レース分の DataFrame。pred_prob, オッズ, 統計列を含む
+        prob_col: キャリブレーション済み確率の列名
+        odds_col: オッズの列名
+        top_n_popularity: 考慮する人気上位馬の数
+        min_expected_value: 最小期待値閾値
 
     Returns:
-        Series for the selected horse, or None if race should be skipped
+        選定された馬の Series、レースをスキップする場合は None
     """
     if race_data.empty:
         return None
 
     rd = race_data.copy()
 
-    # Estimate show odds as ~1/3 of win odds (heuristic)
+    # 複勝オッズは単勝オッズの約 1/3 と推定 (ヒューリスティック)
     rd["_show_odds_est"] = rd[odds_col] / 3.0
     rd["_expected_value"] = rd[prob_col] * rd["_show_odds_est"]
 
-    # Popularity rank within race (lower odds = more popular)
-    # Computed on ALL horses before EV filtering to match notebook strategy
+    # レース内の人気順位 (オッズが低いほど人気)
+    # ノートブック戦略に合わせ、期待値フィルタリング前の全馬に対して計算する
     rd["_pop_rank"] = rd[odds_col].rank(method="min")
 
-    # Filter by expected value
+    # 期待値でフィルタリング
     eligible = rd[rd["_expected_value"] >= min_expected_value]
     if eligible.empty:
         return None
 
-    # Top-N popular among eligible (rank computed on full race data)
+    # 候補のうち人気上位 N 頭 (人気順位はレース全体で計算済み)
     top_pop = eligible[eligible["_pop_rank"] <= top_n_popularity]
 
     if not top_pop.empty and "lcb95_jockey" in top_pop.columns:
-        # Pick by highest jockey LCB95
+        # 騎手 LCB95 最大の馬を選ぶ
         best_idx = top_pop["lcb95_jockey"].idxmax()
         return race_data.loc[best_idx]
 
-    # Fallback: sire LCB95 among all eligible
+    # フォールバック: 候補全体の中で種牡馬 LCB95 が最大の馬
     if "lcb95_sire" in eligible.columns:
         best_idx = eligible["lcb95_sire"].idxmax()
         return race_data.loc[best_idx]
 
-    # Last resort: highest predicted probability among eligible
+    # 最後の手段: 候補の中で予測確率が最大の馬
     best_idx = eligible[prob_col].idxmax()
     return race_data.loc[best_idx]
 
@@ -72,9 +72,9 @@ def select_bets_for_all_races(
     race_key: list[str] | None = None,
     **kwargs,
 ) -> pd.DataFrame:
-    """Apply selection across all races.
+    """全レースに対して選定を適用する。
 
-    Returns a DataFrame of selected horses (one per race).
+    選定された馬の DataFrame を返す(レースごとに1頭)。
     """
     if race_key is None:
         race_key = ["year", "month", "day", "place", "race_num"]
@@ -99,28 +99,28 @@ def select_bet_horse_threshold(
     top_n_popularity: int | None = None,
     **_kwargs,
 ) -> pd.Series | None:
-    """Select horse using threshold method (Frieren approach).
+    """閾値方式 (Frieren アプローチ) を用いて馬を選定する。
 
-    Strategy:
-        1. Filter horses with pred_prob >= prob_threshold
-        2. Among those, check if any are within top-N popularity (by odds rank)
-        3. If yes, pick by highest jockey_lcb95
-        4. If no jockey match, pick by highest sire_lcb95
-        5. If no horse meets threshold, skip race
+    戦略:
+        1. pred_prob >= prob_threshold を満たす馬に絞り込む
+        2. 候補の中で人気上位 N 頭 (オッズ順位) に入る馬があるか確認
+        3. あれば jockey_lcb95 最大の馬を選ぶ
+        4. 該当する騎手がいなければ sire_lcb95 最大の馬を選ぶ
+        5. 閾値を満たす馬がなければレースをスキップ
 
-    Note: Odds are used ONLY for popularity ranking, NOT for EV calculation.
+    注意: オッズは人気順位付けにのみ使用し、期待値計算には使用しない。
 
     Args:
-        race_data: DataFrame for a single race with pred_prob, odds, and stats columns
-        prob_col: Column name for calibrated probability
-        odds_col: Column name for odds
-        prob_threshold: Minimum predicted probability to consider
-        max_popularity: How many popular horses (by odds rank) to consider
+        race_data: 1レース分の DataFrame。pred_prob, オッズ, 統計列を含む
+        prob_col: キャリブレーション済み確率の列名
+        odds_col: オッズの列名
+        prob_threshold: 対象とする最小予測確率
+        max_popularity: 考慮する人気上位馬の数 (オッズ順位基準)
 
     Returns:
-        Series for the selected horse, or None if race should be skipped
+        選定された馬の Series、レースをスキップする場合は None
     """
-    # Allow top_n_popularity as alias for max_popularity (config compat)
+    # top_n_popularity を max_popularity のエイリアスとして許容 (設定互換性)
     if top_n_popularity is not None:
         max_popularity = top_n_popularity
 
@@ -129,25 +129,25 @@ def select_bet_horse_threshold(
 
     rd = race_data.copy()
 
-    # Filter by probability threshold
+    # 確率閾値でフィルタリング
     eligible = rd[rd[prob_col] >= prob_threshold]
     if eligible.empty:
         return None
 
-    # Popularity rank within full race (lower odds = more popular)
+    # レース全体の人気順位 (オッズが低いほど人気)
     rd["_pop_rank"] = rd[odds_col].rank(method="min")
     eligible = eligible.assign(_pop_rank=rd["_pop_rank"])
 
-    # Check for candidates within top-N popularity
+    # 人気上位 N 頭に含まれる候補があるか確認
     top_pop = eligible[eligible["_pop_rank"] <= max_popularity]
 
-    # Check jockey LCB95 (support both naming conventions)
+    # 騎手 LCB95 を確認 (両方の命名規約をサポート)
     jockey_lcb_col = "jockey_lcb95" if "jockey_lcb95" in top_pop.columns else "lcb95_jockey"
     if not top_pop.empty and jockey_lcb_col in top_pop.columns:
         best_idx = top_pop[jockey_lcb_col].idxmax()
         return race_data.loc[best_idx]
 
-    # Fallback: sire LCB95 among all eligible (support both naming conventions)
+    # フォールバック: 候補全体の中で種牡馬 LCB95 を使用 (両方の命名規約をサポート)
     sire_lcb_col = "sire_lcb95" if "sire_lcb95" in eligible.columns else "lcb95_sire"
     if sire_lcb_col in eligible.columns:
         best_idx = eligible[sire_lcb_col].idxmax()
@@ -163,12 +163,12 @@ def select_bets_for_all_races_threshold(
     threshold_step: float = 0.05,
     **kwargs,
 ) -> pd.DataFrame:
-    """Apply threshold selection across all races.
+    """全レースに対して閾値方式の選定を適用する。
 
-    If total selected horses across all races is less than min_total_candidates,
-    the probability threshold is lowered by threshold_step and retried.
+    選定された馬の合計が min_total_candidates に満たない場合、
+    確率閾値を threshold_step ずつ下げて再試行する。
 
-    Returns a DataFrame of selected horses (one per race).
+    選定された馬の DataFrame を返す(レースごとに1頭)。
     """
     if race_key is None:
         race_key = ["year", "month", "day", "place", "race_num"]
@@ -200,16 +200,16 @@ def select_bets_dispatch(
     race_key: list[str] | None = None,
     **kwargs,
 ) -> pd.DataFrame:
-    """Dispatch to threshold or EV selection based on method.
+    """method に応じて閾値方式または期待値方式の選定にディスパッチする。
 
     Args:
-        df: DataFrame with all race data
-        method: Selection method - "threshold" for Frieren approach, "ev" for EV-based
-        race_key: Columns to group races by
-        **kwargs: Additional arguments passed to the selected method
+        df: 全レースデータの DataFrame
+        method: 選定方式。"threshold" は Frieren アプローチ、"ev" は期待値ベース
+        race_key: レースをグループ化する列
+        **kwargs: 選定メソッドに渡す追加引数
 
     Returns:
-        DataFrame of selected horses
+        選定された馬の DataFrame
     """
     if method == "threshold":
         return select_bets_for_all_races_threshold(df, race_key=race_key, **kwargs)

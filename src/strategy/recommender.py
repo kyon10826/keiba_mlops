@@ -1,7 +1,7 @@
-"""Integrated betting recommendation module.
+"""統合的な馬券推奨モジュール。
 
-Combines model predictions, odds data, Harville probabilities, and Kelly
-criterion to produce recommendations for show, win, trio, and trifecta bets.
+モデルの予測、オッズデータ、Harville確率、ケリー基準を組み合わせて、
+複勝・単勝・三連複・三連単の推奨を生成する。
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 def _get_tier_label(prob: float, low: float = 0.3, mid: float = 0.4, high: float = 0.5) -> str:
-    """Return tier label based on predicted probability."""
+    """予測確率に基づいてティアラベルを返す。"""
     if prob >= high:
         return "Buy Aggressive"
     elif prob >= mid:
@@ -43,22 +43,22 @@ def recommend_show(
     prob_threshold: float = 0.3,
     **tier_kwargs,
 ) -> pd.DataFrame:
-    """Recommend show (複勝) bets based on EV or threshold method.
+    """期待値方式または閾値方式で複勝を推奨する。
 
     Args:
-        race_feat: DataFrame with columns: horse_num, horse (name),
-            pred_prob, show_odds_min, show_odds_max.
-        min_ev: Minimum expected value threshold (used when method="ev").
-        bankroll: Current bankroll for Kelly sizing (used when method="ev").
-        kelly_frac: Kelly fraction multiplier (used when method="ev").
-        max_bet_fraction: Max bet as fraction of bankroll (used when method="ev").
-        min_bet: Minimum bet amount (used when method="ev").
-        method: "threshold" (Frieren) or "ev" (traditional).
-        prob_threshold: Minimum pred_prob for threshold method.
-        **tier_kwargs: Tier sizing parameters passed to compute_tier_bet_amount.
+        race_feat: 次の列を持つ DataFrame: horse_num, horse (馬名),
+            pred_prob, show_odds_min, show_odds_max。
+        min_ev: 最小期待値閾値(method="ev" 時に使用)。
+        bankroll: ケリーサイジングに用いる現在のバンクロール(method="ev" 時)。
+        kelly_frac: ケリー倍率(method="ev" 時)。
+        max_bet_fraction: バンクロール比の最大賭け金(method="ev" 時)。
+        min_bet: 最小賭け金(method="ev" 時)。
+        method: "threshold"(Frieren 方式)または "ev"(従来方式)。
+        prob_threshold: 閾値方式での最小 pred_prob。
+        **tier_kwargs: compute_tier_bet_amount に渡すティアサイジングパラメータ。
 
     Returns:
-        DataFrame sorted by pred_prob (threshold) or EV (ev) descending.
+        pred_prob(threshold)または期待値(ev)の降順でソートされた DataFrame。
     """
     if race_feat.empty:
         return pd.DataFrame()
@@ -66,12 +66,12 @@ def recommend_show(
     df = race_feat.copy()
 
     if method == "threshold":
-        # Filter by probability threshold
+        # 確率閾値でフィルタリング
         eligible = df[df["pred_prob"] >= prob_threshold].copy()
         if eligible.empty:
             return pd.DataFrame()
 
-        # Tier-based bet sizing
+        # ティアベースの賭け金サイジング
         tier_kw = {k: v for k, v in tier_kwargs.items() if k.startswith("tier_")}
         eligible["tier"] = eligible["pred_prob"].apply(
             lambda p: _get_tier_label(
@@ -85,12 +85,12 @@ def recommend_show(
             lambda p: compute_tier_bet_amount(p, **tier_kw)
         )
 
-        # Build output columns
+        # 出力列を構築
         out_cols = ["horse_num"]
         if "horse" in eligible.columns:
             out_cols.append("horse")
         out_cols.extend(["pred_prob", "tier", "bet_amount"])
-        # Include show_odds_avg/ev as reference if available
+        # 参照用として show_odds_avg/ev が利用可能なら含める
         if "show_odds_min" in eligible.columns and "show_odds_max" in eligible.columns:
             eligible["show_odds_avg"] = (eligible["show_odds_min"] + eligible["show_odds_max"]) / 2.0
             eligible["show_odds_avg"] = eligible["show_odds_avg"].apply(lambda x: np.nan if x <= 0 else x)
@@ -103,33 +103,33 @@ def recommend_show(
         result = eligible[out_cols].sort_values("pred_prob", ascending=False).reset_index(drop=True)
         return result
 
-    # method == "ev": traditional EV-based approach
+    # method == "ev": 従来の期待値ベースのアプローチ
     cols = ["horse_num", "pred_prob", "show_odds_avg", "ev", "bet_amount"]
 
-    # Compute average show odds
+    # 平均複勝オッズを計算
     if "show_odds_min" in df.columns and "show_odds_max" in df.columns:
         df["show_odds_avg"] = (df["show_odds_min"] + df["show_odds_max"]) / 2.0
     elif "show_odds_avg" in df.columns:
-        pass  # already present
+        pass  # 既に存在
     else:
         logger.warning("No show odds columns found, cannot compute show EV")
         return pd.DataFrame(columns=["horse_num", "horse"] + cols[1:])
 
-    # Replace zero/negative/invalid odds (netkeiba returns -3.0 for scratched)
+    # ゼロ/負/不正なオッズを置換 (netkeiba は取消時に -3.0 を返す)
     df["show_odds_avg"] = df["show_odds_avg"].apply(
         lambda x: np.nan if x <= 0 else x
     )
 
-    # EV = pred_prob * show_odds_avg
+    # 期待値 = pred_prob * show_odds_avg
     df["ev"] = df["pred_prob"] * df["show_odds_avg"]
 
-    # Filter by min EV
+    # 最小期待値でフィルタリング
     eligible = df[df["ev"] >= min_ev].copy()
 
     if eligible.empty:
         return pd.DataFrame(columns=["horse_num", "horse"] + cols[1:])
 
-    # Kelly bet sizing
+    # ケリー方式による賭け金サイジング
     eligible["bet_amount"] = eligible.apply(
         lambda row: compute_bet_amount(
             prob=row["pred_prob"],
@@ -144,7 +144,7 @@ def recommend_show(
         axis=1,
     )
 
-    # Select output columns
+    # 出力列を選択
     out_cols = ["horse_num"]
     if "horse" in eligible.columns:
         out_cols.append("horse")
@@ -165,47 +165,47 @@ def recommend_win(
     prob_threshold: float = 0.3,
     **tier_kwargs,
 ) -> pd.DataFrame:
-    """Recommend win (単勝) bets based on EV or threshold method.
+    """期待値方式または閾値方式で単勝を推奨する。
 
     Args:
-        race_feat: DataFrame with columns: horse_num, horse (name),
-            pred_prob, win_odds.
-        min_ev: Minimum expected value threshold (used when method="ev").
-        bankroll: Current bankroll for Kelly sizing (used when method="ev").
-        kelly_frac: Kelly fraction multiplier (used when method="ev").
-        max_bet_fraction: Max bet as fraction of bankroll (used when method="ev").
-        min_bet: Minimum bet amount (used when method="ev").
-        method: "threshold" (Frieren) or "ev" (traditional).
-        prob_threshold: Minimum pred_prob for threshold method.
-        **tier_kwargs: Tier sizing parameters passed to compute_tier_bet_amount.
+        race_feat: 次の列を持つ DataFrame: horse_num, horse (馬名),
+            pred_prob, win_odds。
+        min_ev: 最小期待値閾値(method="ev" 時に使用)。
+        bankroll: ケリーサイジングに用いる現在のバンクロール(method="ev" 時)。
+        kelly_frac: ケリー倍率(method="ev" 時)。
+        max_bet_fraction: バンクロール比の最大賭け金(method="ev" 時)。
+        min_bet: 最小賭け金(method="ev" 時)。
+        method: "threshold"(Frieren 方式)または "ev"(従来方式)。
+        prob_threshold: 閾値方式での最小 pred_prob。
+        **tier_kwargs: compute_tier_bet_amount に渡すティアサイジングパラメータ。
 
     Returns:
-        DataFrame sorted by pred_prob (threshold) or EV (ev) descending.
+        pred_prob(threshold)または期待値(ev)の降順でソートされた DataFrame。
     """
     if race_feat.empty:
         return pd.DataFrame()
 
     df = race_feat.copy()
 
-    # Exclude scratched/invalid horses if win_odds present
+    # win_odds がある場合、取消/無効の馬を除外
     if "win_odds" in df.columns:
         df = df[df["win_odds"] > 0].reset_index(drop=True)
     if df.empty:
         return pd.DataFrame()
 
-    # Estimate win probability from show pred_prob (Harville)
+    # 複勝 pred_prob から単勝確率を推定 (Harville)
     pred_prob = df["pred_prob"].values
     win_odds = df["win_odds"].values if "win_odds" in df.columns else np.zeros(len(df))
     win_probs = win_probability_from_show(pred_prob, win_odds)
     df["win_prob"] = win_probs
 
     if method == "threshold":
-        # Filter by probability threshold on pred_prob
+        # pred_prob の確率閾値でフィルタリング
         eligible = df[df["pred_prob"] >= prob_threshold].copy()
         if eligible.empty:
             return pd.DataFrame()
 
-        # Tier-based bet sizing
+        # ティアベースの賭け金サイジング
         tier_kw = {k: v for k, v in tier_kwargs.items() if k.startswith("tier_")}
         eligible["tier"] = eligible["pred_prob"].apply(
             lambda p: _get_tier_label(
@@ -223,7 +223,7 @@ def recommend_win(
         if "horse" in eligible.columns:
             out_cols.append("horse")
         out_cols.extend(["pred_prob", "win_prob", "tier", "bet_amount"])
-        # Include win_odds/ev as reference if available
+        # 参照用として win_odds/ev が利用可能なら含める
         if "win_odds" in eligible.columns:
             eligible["ev"] = eligible["win_prob"] * eligible["win_odds"]
             out_cols.extend(["win_odds", "ev"])
@@ -231,22 +231,22 @@ def recommend_win(
         result = eligible[out_cols].sort_values("pred_prob", ascending=False).reset_index(drop=True)
         return result
 
-    # method == "ev": traditional EV-based approach
+    # method == "ev": 従来の期待値ベースのアプローチ
     out_base = ["horse_num", "horse", "pred_prob", "win_prob", "win_odds", "ev", "bet_amount"]
 
     if "win_odds" not in df.columns:
         return pd.DataFrame(columns=out_base)
 
-    # EV = win_prob * win_odds
+    # 期待値 = win_prob * win_odds
     df["ev"] = df["win_prob"] * df["win_odds"]
 
-    # Filter by min EV
+    # 最小期待値でフィルタリング
     eligible = df[df["ev"] >= min_ev].copy()
 
     if eligible.empty:
         return pd.DataFrame(columns=out_base)
 
-    # Kelly bet sizing using win probability
+    # 単勝確率を用いたケリー方式の賭け金サイジング
     eligible["bet_amount"] = eligible.apply(
         lambda row: compute_bet_amount(
             prob=row["win_prob"],
@@ -277,20 +277,20 @@ def recommend_trio(
     min_ev: float = 1.0,
     method: str = "threshold",
 ) -> pd.DataFrame:
-    """Recommend trio (三連複) bets using Harville model.
+    """Harvilleモデルを用いて三連複を推奨する。
 
     Args:
-        race_feat: DataFrame with columns: horse_num, pred_prob, win_odds.
-        top_n: Number of top horses to consider for combinations.
-        trio_odds_df: Optional DataFrame from scrape_trio_odds()
-            with columns: horse1, horse2, horse3, odds, popularity.
-            Horse numbers are 1-indexed (馬番).
-        min_ev: Minimum EV threshold (only applied when method="ev" and odds available).
-        method: "threshold" (Frieren) or "ev" (traditional).
+        race_feat: 次の列を持つ DataFrame: horse_num, pred_prob, win_odds。
+        top_n: 組み合わせ対象とする上位馬の数。
+        trio_odds_df: scrape_trio_odds() から取得した DataFrame(任意)。
+            列: horse1, horse2, horse3, odds, popularity。
+            馬番は1始まり。
+        min_ev: 最小期待値閾値(method="ev" かつオッズが利用可能な場合のみ適用)。
+        method: "threshold"(Frieren 方式)または "ev"(従来方式)。
 
     Returns:
-        DataFrame with columns: horse1, horse2, horse3, trio_prob,
-        odds, ev. Horse numbers are 1-indexed (馬番).
+        次の列を持つ DataFrame: horse1, horse2, horse3, trio_prob, odds, ev。
+        馬番は1始まり。
     """
     out_cols = ["horse1", "horse2", "horse3", "trio_prob", "odds", "ev"]
 
@@ -298,34 +298,34 @@ def recommend_trio(
         return pd.DataFrame(columns=out_cols)
 
     df = race_feat.copy()
-    # Exclude scratched horses (netkeiba returns -3.0 for scratched)
+    # 取消馬を除外 (netkeiba は取消時に -3.0 を返す)
     if "win_odds" in df.columns:
         df = df[df["win_odds"] > 0]
     df = df.sort_values("horse_num").reset_index(drop=True)
-    horse_nums = df["horse_num"].values  # 1-indexed mapping
+    horse_nums = df["horse_num"].values  # 1始まりのマッピング
 
-    # Get win probabilities
+    # 単勝確率を取得
     pred_prob = df["pred_prob"].values
     win_odds = df["win_odds"].values if "win_odds" in df.columns else np.zeros(len(df))
     win_probs = win_probability_from_show(pred_prob, win_odds)
 
-    # Generate trio combinations (0-indexed)
+    # 三連複の組み合わせを生成 (0始まり)
     trio_df = generate_trio_combinations(win_probs, top_n=top_n)
 
     if trio_df.empty:
         return pd.DataFrame(columns=out_cols)
 
-    # Convert 0-indexed to 1-indexed horse numbers
+    # 0始まりのインデックスを1始まりの馬番に変換
     trio_df["horse1"] = trio_df["horse1"].map(lambda i: int(horse_nums[i]))
     trio_df["horse2"] = trio_df["horse2"].map(lambda i: int(horse_nums[i]))
     trio_df["horse3"] = trio_df["horse3"].map(lambda i: int(horse_nums[i]))
 
-    # Merge with actual odds if available
+    # 実際のオッズと突合(可能な場合)
     trio_df["odds"] = np.nan
     trio_df["ev"] = np.nan
 
     if trio_odds_df is not None and not trio_odds_df.empty:
-        # Normalize: sort horse numbers for trio (order doesn't matter)
+        # 正規化: 三連複は順序を問わないので馬番をソートしてキーにする
         def _sort_key(row):
             return tuple(sorted([row["horse1"], row["horse2"], row["horse3"]]))
 
@@ -340,7 +340,7 @@ def recommend_trio(
         trio_df["ev"] = trio_df["trio_prob"] * trio_df["odds"]
         trio_df = trio_df.drop(columns=["_key"])
 
-        # Filter by EV when odds are available (only for method="ev")
+        # オッズがある場合は期待値でフィルタリング (method="ev" のみ)
         if method == "ev":
             has_odds = trio_df["odds"].notna()
             trio_df = trio_df[~has_odds | (trio_df["ev"] >= min_ev)]
@@ -358,20 +358,20 @@ def recommend_trifecta(
     min_ev: float = 1.0,
     method: str = "threshold",
 ) -> pd.DataFrame:
-    """Recommend trifecta (三連単) bets using Harville model.
+    """Harvilleモデルを用いて三連単を推奨する。
 
     Args:
-        race_feat: DataFrame with columns: horse_num, pred_prob, win_odds.
-        top_n: Number of top horses to consider for combinations.
-        trifecta_odds_df: Optional DataFrame from scrape_trifecta_odds()
-            with columns: horse1, horse2, horse3, odds, popularity.
-            Horse numbers are 1-indexed, order matters (1st, 2nd, 3rd).
-        min_ev: Minimum EV threshold (only applied when method="ev" and odds available).
-        method: "threshold" (Frieren) or "ev" (traditional).
+        race_feat: 次の列を持つ DataFrame: horse_num, pred_prob, win_odds。
+        top_n: 組み合わせ対象とする上位馬の数。
+        trifecta_odds_df: scrape_trifecta_odds() から取得した DataFrame(任意)。
+            列: horse1, horse2, horse3, odds, popularity。
+            馬番は1始まり、順序は意味を持つ(1着・2着・3着)。
+        min_ev: 最小期待値閾値(method="ev" かつオッズが利用可能な場合のみ適用)。
+        method: "threshold"(Frieren 方式)または "ev"(従来方式)。
 
     Returns:
-        DataFrame with columns: horse1, horse2, horse3, harville_prob,
-        odds, ev. Horse numbers are 1-indexed (馬番), order = 着順.
+        次の列を持つ DataFrame: horse1, horse2, horse3, harville_prob, odds, ev。
+        馬番は1始まり、順序は着順。
     """
     out_cols = ["horse1", "horse2", "horse3", "harville_prob", "odds", "ev"]
 
@@ -379,34 +379,34 @@ def recommend_trifecta(
         return pd.DataFrame(columns=out_cols)
 
     df = race_feat.copy()
-    # Exclude scratched horses (netkeiba returns -3.0 for scratched)
+    # 取消馬を除外 (netkeiba は取消時に -3.0 を返す)
     if "win_odds" in df.columns:
         df = df[df["win_odds"] > 0]
     df = df.sort_values("horse_num").reset_index(drop=True)
-    horse_nums = df["horse_num"].values  # 1-indexed mapping
+    horse_nums = df["horse_num"].values  # 1始まりのマッピング
 
-    # Get win probabilities
+    # 単勝確率を取得
     pred_prob = df["pred_prob"].values
     win_odds = df["win_odds"].values if "win_odds" in df.columns else np.zeros(len(df))
     win_probs = win_probability_from_show(pred_prob, win_odds)
 
-    # Generate trifecta combinations (0-indexed)
+    # 三連単の組み合わせを生成 (0始まり)
     trifecta_df = generate_trifecta_combinations(win_probs, top_n=top_n)
 
     if trifecta_df.empty:
         return pd.DataFrame(columns=out_cols)
 
-    # Convert 0-indexed to 1-indexed horse numbers
+    # 0始まりのインデックスを1始まりの馬番に変換
     trifecta_df["horse1"] = trifecta_df["horse1"].map(lambda i: int(horse_nums[i]))
     trifecta_df["horse2"] = trifecta_df["horse2"].map(lambda i: int(horse_nums[i]))
     trifecta_df["horse3"] = trifecta_df["horse3"].map(lambda i: int(horse_nums[i]))
 
-    # Merge with actual odds if available
+    # 実際のオッズと突合(可能な場合)
     trifecta_df["odds"] = np.nan
     trifecta_df["ev"] = np.nan
 
     if trifecta_odds_df is not None and not trifecta_odds_df.empty:
-        # Trifecta: order matters, so key is (h1, h2, h3) as-is
+        # 三連単は順序が重要なので (h1, h2, h3) をそのままキーにする
         odds_lookup = {}
         for _, row in trifecta_odds_df.iterrows():
             k = (int(row["horse1"]), int(row["horse2"]), int(row["horse3"]))
@@ -420,7 +420,7 @@ def recommend_trifecta(
         trifecta_df["odds"] = trifecta_df.apply(_lookup_odds, axis=1)
         trifecta_df["ev"] = trifecta_df["harville_prob"] * trifecta_df["odds"]
 
-        # Filter by EV when odds are available (only for method="ev")
+        # オッズがある場合は期待値でフィルタリング (method="ev" のみ)
         if method == "ev":
             has_odds = trifecta_df["odds"].notna()
             trifecta_df = trifecta_df[~has_odds | (trifecta_df["ev"] >= min_ev)]
@@ -443,47 +443,46 @@ def generate_full_recommendation(
     prob_threshold: float = 0.3,
     **tier_kwargs,
 ) -> dict[str, pd.DataFrame]:
-    """Generate recommendations for all bet types.
+    """全ての馬券種について推奨を生成する。
 
     Args:
-        race_feat: DataFrame with per-horse predictions and odds.
-            Required columns: horse_num, pred_prob.
-            Optional: horse (name), win_odds, show_odds_min, show_odds_max.
-        min_ev: Minimum expected value threshold (used when method="ev").
-        bankroll: Current bankroll (used when method="ev").
-        kelly_frac: Kelly fraction multiplier (used when method="ev").
-        top_n: Top N horses for trio/trifecta combinations.
-        trio_odds_df: Optional trio odds DataFrame.
-        trifecta_odds_df: Optional trifecta odds DataFrame.
-        method: "threshold" (Frieren) or "ev" (traditional).
-        prob_threshold: Minimum pred_prob for threshold method.
-        **tier_kwargs: Tier sizing parameters passed to compute_tier_bet_amount.
+        race_feat: 各馬の予測値とオッズを持つ DataFrame。
+            必須列: horse_num, pred_prob。
+            任意: horse (馬名), win_odds, show_odds_min, show_odds_max。
+        min_ev: 最小期待値閾値(method="ev" 時に使用)。
+        bankroll: 現在のバンクロール(method="ev" 時に使用)。
+        kelly_frac: ケリー倍率(method="ev" 時に使用)。
+        top_n: 三連複・三連単の組み合わせで用いる上位 N 頭。
+        trio_odds_df: 三連複オッズの DataFrame(任意)。
+        trifecta_odds_df: 三連単オッズの DataFrame(任意)。
+        method: "threshold"(Frieren 方式)または "ev"(従来方式)。
+        prob_threshold: 閾値方式での最小 pred_prob。
+        **tier_kwargs: compute_tier_bet_amount に渡すティアサイジングパラメータ。
 
     Returns:
-        Dict with keys "show", "win", "trio", "trifecta",
-        each containing a recommendation DataFrame.
+        "show", "win", "trio", "trifecta" をキーとする辞書。各値は推奨 DataFrame。
     """
     result: dict[str, pd.DataFrame] = {}
 
-    # Show recommendations
+    # 複勝の推奨
     result["show"] = recommend_show(
         race_feat, min_ev=min_ev, bankroll=bankroll, kelly_frac=kelly_frac,
         method=method, prob_threshold=prob_threshold, **tier_kwargs,
     )
 
-    # Win recommendations
+    # 単勝の推奨
     result["win"] = recommend_win(
         race_feat, min_ev=min_ev, bankroll=bankroll, kelly_frac=kelly_frac,
         method=method, prob_threshold=prob_threshold, **tier_kwargs,
     )
 
-    # Trio recommendations
+    # 三連複の推奨
     result["trio"] = recommend_trio(
         race_feat, top_n=top_n, trio_odds_df=trio_odds_df, min_ev=min_ev,
         method=method,
     )
 
-    # Trifecta recommendations
+    # 三連単の推奨
     result["trifecta"] = recommend_trifecta(
         race_feat, top_n=top_n, trifecta_odds_df=trifecta_odds_df, min_ev=min_ev,
         method=method,

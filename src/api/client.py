@@ -1,4 +1,4 @@
-"""Race data client wrapping scraper functions for odds and race card retrieval."""
+"""オッズと出馬表を取得するためのスクレイパー関数をラップするレースデータクライアント。"""
 
 from __future__ import annotations
 
@@ -9,19 +9,19 @@ from src.scraper.race_card import scrape_race_card, scrape_today_races
 
 
 class RaceDataClient:
-    """Thin wrapper around scraper functions for race data retrieval."""
+    """レースデータ取得のためのスクレイパー関数の薄いラッパー。"""
 
     def __init__(self, cfg: dict):
         self.scraper_cfg = cfg.get("scraper", {})
 
     def get_odds(self, race_id: str) -> pd.DataFrame | None:
-        """Fetch odds for a race via scraping.
+        """スクレイピングによりレースのオッズを取得する。
 
         Args:
-            race_id: Race ID string
+            race_id: レースID文字列
 
         Returns:
-            DataFrame with odds data, or None on failure
+            オッズデータを含むDataFrame、失敗時はNone
         """
         try:
             return scrape_odds(race_id)
@@ -30,13 +30,13 @@ class RaceDataClient:
             return None
 
     def get_race_card(self, race_id: str) -> pd.DataFrame | None:
-        """Fetch race entry table via scraping.
+        """スクレイピングにより出馬表を取得する。
 
         Args:
-            race_id: Race ID string
+            race_id: レースID文字列
 
         Returns:
-            DataFrame with race card data, or None on failure
+            出馬表データを含むDataFrame、失敗時はNone
         """
         try:
             return scrape_race_card(race_id)
@@ -45,13 +45,13 @@ class RaceDataClient:
             return None
 
     def get_today_races(self, date: str | None = None) -> list[dict]:
-        """Fetch today's race schedule via scraping.
+        """スクレイピングにより本日のレーススケジュールを取得する。
 
         Args:
-            date: Date string (optional, defaults to today)
+            date: 日付文字列（省略可、デフォルトは本日）
 
         Returns:
-            List of race info dicts
+            レース情報の辞書リスト
         """
         try:
             return scrape_today_races(date)
@@ -65,15 +65,15 @@ def build_recommendations(
     selected_horse_num: int,
     bet_amount: float,
 ) -> pd.DataFrame:
-    """Build a recommendations DataFrame for a single race.
+    """単一レースの推奨情報DataFrameを構築する。
 
     Args:
-        race_data: DataFrame with horse info and pred_prob
-        selected_horse_num: Horse number selected for betting
-        bet_amount: Recommended bet amount for the selected horse
+        race_data: 馬情報とpred_probを含むDataFrame
+        selected_horse_num: 購入対象に選択された馬番
+        bet_amount: 選択された馬に対する推奨購入金額
 
     Returns:
-        DataFrame with columns: horse, horse_num, pred_prob, bet_amount
+        カラム horse, horse_num, pred_prob, bet_amount を持つDataFrame
     """
     cols = ["horse", "horse_num", "pred_prob"]
     available = [c for c in cols if c in race_data.columns]

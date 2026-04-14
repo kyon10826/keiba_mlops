@@ -1,17 +1,17 @@
-"""Real-time odds scraping from netkeiba.
+"""netkeibaからリアルタイムのオッズをスクレイピングするモジュール。
 
-Replaces the competition API (172.192.40.114) with direct
-netkeiba scraping for win, show, trio, and trifecta odds.
+コンペAPI（172.192.40.114）を置き換え、netkeibaを直接スクレイピングして
+単勝・複勝・三連複・三連単のオッズを取得する。
 
-API type mapping:
-    1 = 単勝 (win)      - key: 2-digit horse_num
-    2 = 複勝 (show)     - key: 2-digit horse_num
-    3 = 馬連 (quinella)  - key: 4-digit pair
-    4 = 馬単 (exacta)    - key: 4-digit pair
-    5 = ワイド (wide)    - key: 4-digit pair
-    6 = 枠連 (bracket)   - key: 4-digit pair
-    7 = 三連複 (trio)    - key: 6-digit triplet (sorted)
-    8 = 三連単 (trifecta) - key: 6-digit triplet (ordered)
+APIのtypeマッピング:
+    1 = 単勝       - キー: 2桁の馬番
+    2 = 複勝       - キー: 2桁の馬番
+    3 = 馬連       - キー: 4桁の組み合わせ
+    4 = 馬単       - キー: 4桁の組み合わせ
+    5 = ワイド     - キー: 4桁の組み合わせ
+    6 = 枠連       - キー: 4桁の組み合わせ
+    7 = 三連複     - キー: 6桁の組み合わせ（昇順ソート済み）
+    8 = 三連単     - キー: 6桁の組み合わせ（着順通り）
 """
 
 from __future__ import annotations
@@ -39,17 +39,17 @@ def _request_with_retry(
     interval: float = 1.5,
     encoding: str = "EUC-JP",
 ) -> requests.Response | None:
-    """Send GET request with retry logic.
+    """リトライ機能付きでGETリクエストを送信する。
 
     Args:
-        url: Target URL.
-        max_retries: Maximum retry attempts.
-        timeout: Request timeout in seconds.
-        interval: Sleep interval between retries.
-        encoding: Response encoding.
+        url: 対象のURL。
+        max_retries: 最大リトライ回数。
+        timeout: リクエストのタイムアウト秒数。
+        interval: リトライ間のスリープ間隔。
+        encoding: レスポンスのエンコーディング。
 
     Returns:
-        Response object or None on failure.
+        レスポンスオブジェクト。失敗時はNone。
     """
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -84,27 +84,27 @@ def _fetch_odds_api(
     timeout: int = 30,
     interval: float = 1.5,
 ) -> dict | None:
-    """Fetch odds from netkeiba JSON API.
+    """netkeibaのJSON APIからオッズを取得する。
 
     Args:
-        race_id: netkeiba race ID (12 digits).
-        odds_type: Odds type (1=win/show, 7=trio, 8=trifecta, etc.).
-        max_retries: Maximum retry attempts.
-        timeout: Request timeout in seconds.
-        interval: Sleep interval between retries.
+        race_id: netkeibaのレースID（12桁）。
+        odds_type: オッズの種類（1=単勝/複勝, 7=三連複, 8=三連単 など）。
+        max_retries: 最大リトライ回数。
+        timeout: リクエストのタイムアウト秒数。
+        interval: リトライ間のスリープ間隔。
 
     Returns:
-        Parsed JSON dict or None on failure.
+        パース済みのJSON dict。失敗時はNone。
     """
     if is_nar_race(race_id):
-        # Try NAR-specific odds API first
+        # まずNAR専用のオッズAPIを試す
         url = (
             f"{NAR_ODDS_BASE.replace('/odds', '')}/api/api_get_jra_odds.html"
             f"?race_id={race_id}&type={odds_type}&action=update"
         )
         resp = _request_with_retry(url, max_retries, timeout, interval, encoding="utf-8")
         if resp is None:
-            # Fallback to JRA odds API
+            # JRAのオッズAPIにフォールバック
             url = (
                 f"{ODDS_BASE.replace('/odds', '')}/api/api_get_jra_odds.html"
                 f"?race_id={race_id}&type={odds_type}&action=update"
@@ -133,16 +133,16 @@ def _scrape_win_odds(
     timeout: int = 30,
     interval: float = 1.5,
 ) -> list[dict]:
-    """Fetch win (単勝) odds for a race via API.
+    """APIからレースの単勝オッズを取得する。
 
     Args:
-        race_id: netkeiba race ID (12 digits).
-        max_retries: Maximum retry attempts.
-        timeout: Request timeout in seconds.
-        interval: Sleep interval between retries.
+        race_id: netkeibaのレースID（12桁）。
+        max_retries: 最大リトライ回数。
+        timeout: リクエストのタイムアウト秒数。
+        interval: リトライ間のスリープ間隔。
 
     Returns:
-        List of dicts with horse_num, win_odds, popularity.
+        horse_num, win_odds, popularity を含むdictのリスト。
     """
     api_data = _fetch_odds_api(race_id, odds_type=1, max_retries=max_retries,
                                timeout=timeout, interval=interval)
@@ -153,7 +153,7 @@ def _scrape_win_odds(
     odds_data = api_data["odds"]
     results = []
 
-    # type "1" = win odds: {"horse_num": ["odds", "", "popularity"]}
+    # type "1" = 単勝オッズ: {"horse_num": ["オッズ", "", "人気"]}
     win_odds = odds_data.get("1", {})
     for hnum_str, vals in win_odds.items():
         if not isinstance(vals, list) or len(vals) < 3:
@@ -181,16 +181,16 @@ def _scrape_show_odds(
     timeout: int = 30,
     interval: float = 1.5,
 ) -> list[dict]:
-    """Fetch show (複勝) odds for a race via API.
+    """APIからレースの複勝オッズを取得する。
 
     Args:
-        race_id: netkeiba race ID (12 digits).
-        max_retries: Maximum retry attempts.
-        timeout: Request timeout in seconds.
-        interval: Sleep interval between retries.
+        race_id: netkeibaのレースID（12桁）。
+        max_retries: 最大リトライ回数。
+        timeout: リクエストのタイムアウト秒数。
+        interval: リトライ間のスリープ間隔。
 
     Returns:
-        List of dicts with horse_num, show_odds_min, show_odds_max.
+        horse_num, show_odds_min, show_odds_max を含むdictのリスト。
     """
     api_data = _fetch_odds_api(race_id, odds_type=1, max_retries=max_retries,
                                timeout=timeout, interval=interval)
@@ -200,7 +200,7 @@ def _scrape_show_odds(
     odds_data = api_data["odds"]
     results = []
 
-    # type "2" = show odds: {"horse_num": ["min", "max", "popularity"]}
+    # type "2" = 複勝オッズ: {"horse_num": ["下限", "上限", "人気"]}
     show_odds = odds_data.get("2", {})
     for hnum_str, vals in show_odds.items():
         if not isinstance(vals, list) or len(vals) < 2:
@@ -228,20 +228,20 @@ def scrape_trio_odds(
     timeout: int = 30,
     interval: float = 2.0,
 ) -> pd.DataFrame:
-    """Fetch trio (三連複) odds for a race.
+    """レースの三連複オッズを取得する。
 
     三連複 = 3頭の組み合わせ（順不同）。API type=7。
     キーは6桁の馬番連結（昇順ソート済み、例: "010203"）。
 
     Args:
-        race_id: netkeiba race ID (12 digits).
-        max_retries: Maximum retry attempts.
-        timeout: Request timeout in seconds.
-        interval: Sleep interval between retries.
+        race_id: netkeibaのレースID（12桁）。
+        max_retries: 最大リトライ回数。
+        timeout: リクエストのタイムアウト秒数。
+        interval: リトライ間のスリープ間隔。
 
     Returns:
-        DataFrame with columns: horse1, horse2, horse3, odds, popularity.
-        Empty DataFrame if scraping fails.
+        horse1, horse2, horse3, odds, popularity の列を持つDataFrame。
+        スクレイピング失敗時は空のDataFrame。
     """
     api_data = _fetch_odds_api(race_id, odds_type=7, max_retries=max_retries,
                                timeout=timeout, interval=interval)
@@ -290,7 +290,7 @@ def scrape_trifecta_odds(
     timeout: int = 30,
     interval: float = 2.0,
 ) -> pd.DataFrame:
-    """Fetch trifecta (三連単) odds for a race.
+    """レースの三連単オッズを取得する。
 
     三連単 = 3頭の着順指定（順序あり）。API type=8。
     キーは6桁の馬番連結（着順通り、例: "030201" = 1着3番, 2着2番, 3着1番）。
@@ -299,18 +299,18 @@ def scrape_trifecta_odds(
     その馬番を含む組み合わせのみにフィルタして返す。
 
     Args:
-        race_id: netkeiba race ID (12 digits).
-        horses: Optional list of horse numbers to filter.
-            If provided, only combinations containing ALL specified horses
-            are returned. None returns all combinations.
-        max_retries: Maximum retry attempts.
-        timeout: Request timeout in seconds.
-        interval: Sleep interval between retries.
+        race_id: netkeibaのレースID（12桁）。
+        horses: フィルタ対象の馬番リスト（任意）。
+            指定された場合、指定馬番をすべて含む組み合わせのみ返す。
+            Noneの場合はすべての組み合わせを返す。
+        max_retries: 最大リトライ回数。
+        timeout: リクエストのタイムアウト秒数。
+        interval: リトライ間のスリープ間隔。
 
     Returns:
-        DataFrame with columns: horse1, horse2, horse3, odds, popularity.
-        horse1=1st, horse2=2nd, horse3=3rd.
-        Empty DataFrame if scraping fails.
+        horse1, horse2, horse3, odds, popularity の列を持つDataFrame。
+        horse1=1着、horse2=2着、horse3=3着。
+        スクレイピング失敗時は空のDataFrame。
     """
     api_data = _fetch_odds_api(race_id, odds_type=8, max_retries=max_retries,
                                timeout=timeout, interval=interval)
@@ -337,7 +337,7 @@ def scrape_trifecta_odds(
         except (ValueError, TypeError):
             continue
 
-        # Filter: if horses specified, only include combos containing all of them
+        # フィルタ: horses が指定されていれば、それらをすべて含む組み合わせのみ残す
         if horse_set and not horse_set.issubset({h1, h2, h3}):
             continue
 
@@ -371,39 +371,39 @@ def scrape_odds(
     include_trifecta: bool = False,
     trifecta_horses: list[int] | None = None,
 ) -> pd.DataFrame | dict[str, pd.DataFrame]:
-    """Scrape odds for a race from netkeiba.
+    """netkeibaからレースのオッズをスクレイピングする。
 
-    By default, combines win (単勝) and show (複勝) odds into a single
-    DataFrame (backward-compatible).
+    デフォルトでは単勝と複勝のオッズを1つのDataFrameに統合して返す
+    （後方互換性のため）。
 
-    When include_trio or include_trifecta is True, returns a dict of
-    DataFrames keyed by odds type.
+    include_trio または include_trifecta がTrueの場合、オッズ種別をキーとする
+    DataFrameのdictを返す。
 
     Args:
-        race_id: netkeiba race ID (12 digits).
-        max_retries: Maximum retry attempts.
-        timeout: Request timeout in seconds.
-        interval: Sleep interval between retries.
-        include_trio: If True, also fetch trio (三連複) odds.
-        include_trifecta: If True, also fetch trifecta (三連単) odds.
-        trifecta_horses: Horse numbers to filter trifecta combos.
-            Only used when include_trifecta is True.
+        race_id: netkeibaのレースID（12桁）。
+        max_retries: 最大リトライ回数。
+        timeout: リクエストのタイムアウト秒数。
+        interval: リトライ間のスリープ間隔。
+        include_trio: Trueの場合、三連複オッズも取得する。
+        include_trifecta: Trueの場合、三連単オッズも取得する。
+        trifecta_horses: 三連単の組み合わせをフィルタする馬番。
+            include_trifecta がTrueのときのみ使用される。
 
     Returns:
-        If include_trio and include_trifecta are both False:
-            DataFrame with columns: horse_num, win_odds, popularity,
-            show_odds_min, show_odds_max.
-        Otherwise:
-            Dict with keys "win_show" (DataFrame), and optionally
-            "trio" (DataFrame), "trifecta" (DataFrame).
+        include_trio と include_trifecta の両方がFalseの場合:
+            horse_num, win_odds, popularity, show_odds_min, show_odds_max
+            の列を持つDataFrame。
+        それ以外の場合:
+            "win_show"（DataFrame）をキーとするdict。
+            オプションで "trio"（DataFrame）、"trifecta"（DataFrame）を含む。
     """
-    # Scrape win odds
+    # 単勝オッズをスクレイピング
     win_data = _scrape_win_odds(race_id, max_retries, timeout, interval)
 
-    # Delay between requests
+    # リクエスト間の待機
     time.sleep(interval)
 
-    # Scrape show odds
+    # 複勝オッズをスクレイピング
     show_data = _scrape_show_odds(race_id, max_retries, timeout, interval)
 
     if not win_data and not show_data:
@@ -413,19 +413,19 @@ def scrape_odds(
                       "show_odds_min", "show_odds_max"]
         )
     else:
-        # Build win odds DataFrame
+        # 単勝オッズのDataFrameを作成
         if win_data:
             win_df = pd.DataFrame(win_data)[["horse_num", "win_odds", "popularity"]]
         else:
             win_df = pd.DataFrame(columns=["horse_num", "win_odds", "popularity"])
 
-        # Build show odds DataFrame
+        # 複勝オッズのDataFrameを作成
         if show_data:
             show_df = pd.DataFrame(show_data)[["horse_num", "show_odds_min", "show_odds_max"]]
         else:
             show_df = pd.DataFrame(columns=["horse_num", "show_odds_min", "show_odds_max"])
 
-        # Merge
+        # マージ
         if not win_df.empty and not show_df.empty:
             win_show_df = win_df.merge(show_df, on="horse_num", how="outer")
         elif not win_df.empty:
@@ -437,19 +437,19 @@ def scrape_odds(
             win_show_df["win_odds"] = 0.0
             win_show_df["popularity"] = 0
 
-        # Fill NaN
+        # NaNを埋める
         win_show_df = win_show_df.fillna(0)
 
-        # Sort by horse number
+        # 馬番でソート
         win_show_df = win_show_df.sort_values("horse_num").reset_index(drop=True)
 
     logger.info("Scraped odds for race %s: %d horses", race_id, len(win_show_df))
 
-    # Return simple DataFrame if no extra odds requested (backward-compatible)
+    # 追加のオッズが要求されていない場合はシンプルなDataFrameを返す（後方互換）
     if not include_trio and not include_trifecta:
         return win_show_df
 
-    # Build multi-odds result
+    # 複数オッズの結果を構築
     result: dict[str, pd.DataFrame] = {"win_show": win_show_df}
 
     if include_trio:

@@ -1,4 +1,4 @@
-"""Feature pipeline orchestration."""
+"""特徴量パイプラインのオーケストレーション。"""
 
 from __future__ import annotations
 
@@ -14,25 +14,25 @@ from src.features.jockey import compute_jockey_stats, add_jockey_features
 from src.features.sire import compute_sire_stats, add_sire_features
 from src.features.relative import add_relative_features
 
-# The ordered list of feature columns used for training
+# 学習に使用する特徴量列の順序付きリスト
 FEATURE_COLUMNS = [
-    # Race
+    # レース
     "place_encoded", "track_type", "dist", "dist_category",
     "condition_encoded", "weather_encoded", "class_grade", "field_size",
-    # Horse rolling
+    # 馬のローリング
     "rank_last", "rank_rolling_3", "rank_rolling_5", "show_rate_last_5",
     "last_3f_rolling_3", "time_diff_rolling_3",
     "weight_horse", "weight_change", "race_span_days",
     "prize_cumsum", "label_momentum",
-    # Jockey
+    # 騎手
     "jockey_encoded", "jockey_show_rate", "jockey_win_rate",
     "jockey_race_count", "jockey_lcb95",
-    # Sire
+    # 種牡馬
     "father_encoded", "sire_show_rate", "sire_lcb95",
     "sire_show_rate_turf", "sire_show_rate_dirt",
-    # Relative
+    # 相対
     "odds_rank", "weight_zscore", "age_relative",
-    # Raw passthrough
+    # そのまま通す生値
     "horse_num", "waku_num", "age",
 ]
 
@@ -44,12 +44,12 @@ CATEGORICAL_FEATURES = [
 
 
 def build_target(df: pd.DataFrame) -> pd.Series:
-    """Create binary target: show (1-3 finish) = 1."""
+    """二値ターゲットを作成する: 複勝 (1〜3 着) = 1。"""
     return ((df["rank"] >= 1) & (df["rank"] <= 3)).astype(int)
 
 
 class FeaturePipeline:
-    """Orchestrates feature building across all modules."""
+    """全モジュールにわたる特徴量生成をオーケストレーションする。"""
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -57,7 +57,7 @@ class FeaturePipeline:
         self.alpha_prior = bayesian.get("alpha_prior", 2)
         self.beta_prior = bayesian.get("beta_prior", 5)
 
-        # Stored during fit
+        # fit 時に保存される
         self.jockey_stats: pd.DataFrame | None = None
         self.sire_stats: pd.DataFrame | None = None
         self.cold_start_defaults: dict | None = None
@@ -67,56 +67,56 @@ class FeaturePipeline:
         self.father_map: dict | None = None
 
     def fit(self, train_df: pd.DataFrame) -> None:
-        """Compute stats from training data."""
+        """学習データから統計量を算出する。"""
         self.jockey_stats = compute_jockey_stats(
             train_df, self.alpha_prior, self.beta_prior
         )
         self.sire_stats = compute_sire_stats(
             train_df, self.alpha_prior, self.beta_prior
         )
-        # Compute cold-start defaults (requires rolling features)
+        # コールドスタートのデフォルト値を算出 (ローリング特徴量が必要)
         train_with_rolling = add_horse_features(train_df)
         self.cold_start_defaults = compute_cold_start_defaults(train_with_rolling)
 
     def transform(self, df: pd.DataFrame, is_train: bool = False) -> pd.DataFrame:
-        """Apply all feature transformations.
+        """すべての特徴量変換を適用する。
 
-        For training data, concatenate all years first, compute horse rolling features,
-        then split back. For inference data, concatenate with historical data.
+        学習データの場合、まず全年を結合して馬のローリング特徴量を算出し、
+        その後で元に分割する。推論データの場合は履歴データと結合する。
 
         Args:
-            df: Input dataframe.
-            is_train: If True, this is training data and stats will be recomputed.
+            df: 入力 DataFrame。
+            is_train: True の場合、学習データとして扱い統計量を再計算する。
         """
-        # Race features
+        # レース特徴量
         out, self.place_map, self.weather_map = add_race_features(df)
 
-        # Horse rolling features (requires sorted by id, race_id)
+        # 馬のローリング特徴量 (id, race_id でソート済みである必要がある)
         out = add_horse_features(out, cold_start_defaults=self.cold_start_defaults)
 
-        # Jockey features
+        # 騎手特徴量
         out, self.jockey_map = add_jockey_features(out, self.jockey_stats)
 
-        # Sire features
+        # 種牡馬特徴量
         out, self.father_map = add_sire_features(out, self.sire_stats)
 
-        # Relative features
+        # 相対特徴量
         out = add_relative_features(out)
 
         return out
 
     def fit_transform(self, train_df: pd.DataFrame) -> pd.DataFrame:
-        """Fit on training data and transform it."""
+        """学習データに対して fit し、同時に変換する。"""
         self.fit(train_df)
         return self.transform(train_df, is_train=True)
 
     def get_feature_matrix(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Extract the feature columns from a transformed dataframe."""
+        """変換済み DataFrame から特徴量列を抽出する。"""
         available = [c for c in FEATURE_COLUMNS if c in df.columns]
         return df[available].copy()
 
     def save(self, path: str) -> None:
-        """Persist pipeline state (stats + mappings)."""
+        """パイプラインの状態 (統計量とマッピング) を永続化する。"""
         os.makedirs(os.path.dirname(path), exist_ok=True)
         state = {
             "jockey_stats": self.jockey_stats,
@@ -134,7 +134,7 @@ class FeaturePipeline:
 
     @classmethod
     def load(cls, path: str, cfg: dict | None = None) -> "FeaturePipeline":
-        """Load a saved pipeline."""
+        """保存済みパイプラインを読み込む。"""
         with open(path, "rb") as f:
             state = pickle.load(f)
         pipe = cls(cfg or {})

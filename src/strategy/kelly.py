@@ -1,4 +1,4 @@
-"""Fractional Kelly Criterion and Tier-based sizing for bet amount computation."""
+"""賭け金計算のためのフラクショナル・ケリー基準およびティアベースのサイジング。"""
 
 from __future__ import annotations
 
@@ -6,16 +6,16 @@ import numpy as np
 
 
 def kelly_fraction(prob: float, odds: float) -> float:
-    """Compute full Kelly fraction.
+    """フルケリー比率を計算する。
 
     Args:
-        prob: Estimated probability of winning
-        odds: Decimal odds (payout per unit bet, e.g. 3.0 means 3x return)
+        prob: 勝利確率の推定値
+        odds: オッズ(単位賭け金あたりの払戻。例: 3.0 は3倍のリターン)
 
     Returns:
-        Kelly fraction (can be negative if bet has negative EV)
+        ケリー比率(期待値がマイナスの場合は負の値となることがある)
     """
-    b = odds - 1.0  # net odds
+    b = odds - 1.0  # 正味オッズ
     q = 1.0 - prob
     if b <= 0:
         return 0.0
@@ -30,38 +30,38 @@ def compute_bet_amount(
     max_bet_fraction: float = 0.05,
     min_bet: float = 100.0,
 ) -> float:
-    """Compute bet amount using fractional Kelly criterion.
+    """フラクショナル・ケリー基準を用いて賭け金を計算する。
 
     Args:
-        prob: Estimated probability of show (1-3 finish)
-        odds: Estimated show odds (decimal)
-        bankroll: Current bankroll
-        fraction: Kelly fraction multiplier (0.25 = quarter Kelly)
-        max_bet_fraction: Maximum bet as fraction of bankroll
-        min_bet: Minimum bet amount (platform minimum)
+        prob: 複勝(1-3着)確率の推定値
+        odds: 複勝オッズの推定値(小数)
+        bankroll: 現在のバンクロール
+        fraction: ケリー倍率(0.25 = クォーターケリー)
+        max_bet_fraction: バンクロールに対する最大賭け金比率
+        min_bet: 最小賭け金(プラットフォームの最低額)
 
     Returns:
-        Bet amount rounded to nearest 100 (ポイント単位)
+        100単位に丸めた賭け金(ポイント単位)
     """
     kf = kelly_fraction(prob, odds)
 
     if kf <= 0:
         return 0.0
 
-    # Apply fractional Kelly
+    # フラクショナル・ケリーを適用
     bet = bankroll * kf * fraction
 
-    # Cap at max fraction of bankroll
+    # バンクロールの最大比率で上限を設ける
     max_bet = bankroll * max_bet_fraction
     bet = min(bet, max_bet)
 
-    # Round to 100-unit increments
+    # 100単位に丸める
     bet = int(bet // 100) * 100
 
-    # Apply minimum
+    # 最小値を適用
     if bet < min_bet:
-        # If Kelly says bet but amount is below minimum, bet minimum
-        # (only if EV is positive)
+        # ケリーが賭けると判断したが最小値未満の場合は最小値を賭ける
+        # (期待値が正の場合に限る)
         if kf > 0:
             bet = min_bet
         else:
@@ -78,7 +78,7 @@ def compute_bet_amounts_batch(
     max_bet_fraction: float = 0.05,
     min_bet: float = 100.0,
 ) -> np.ndarray:
-    """Vectorized version of compute_bet_amount."""
+    """compute_bet_amount のベクトル化版。"""
     amounts = np.array([
         compute_bet_amount(p, o, bankroll, fraction, max_bet_fraction, min_bet)
         for p, o in zip(probs, odds)
@@ -95,18 +95,18 @@ def compute_tier_bet_amount(
     tier_mid_amount: float = 300.0,
     tier_high_amount: float = 500.0,
 ) -> float:
-    """Compute bet amount using tier-based sizing (Frieren method).
+    """ティアベースのサイジング(Frieren方式)で賭け金を計算する。
 
-    Assigns bet amount based on predicted probability tiers:
-    - prob >= tier_high_threshold → Buy Aggressive (tier_high_amount)
-    - prob >= tier_mid_threshold  → Buy (tier_mid_amount)
-    - prob >= tier_low_threshold  → Buy Low (tier_low_amount)
-    - prob < tier_low_threshold   → No bet (0)
+    予測確率のティアに基づいて賭け金を割り当てる:
+    - prob >= tier_high_threshold → 強気買い (tier_high_amount)
+    - prob >= tier_mid_threshold  → 通常買い (tier_mid_amount)
+    - prob >= tier_low_threshold  → 小額買い (tier_low_amount)
+    - prob < tier_low_threshold   → 見送り (0)
 
-    Does NOT require odds. Uses only model prediction probability.
+    オッズは不要で、モデルの予測確率のみを使用する。
 
     Returns:
-        Bet amount (float). 0.0 if below lowest threshold.
+        賭け金(float)。最低閾値未満の場合は 0.0。
     """
     if prob >= tier_high_threshold:
         amount = tier_high_amount
@@ -117,7 +117,7 @@ def compute_tier_bet_amount(
     else:
         return 0.0
 
-    # Round to 100-unit increments
+    # 100単位に丸める
     return float(int(amount // 100) * 100)
 
 
@@ -125,7 +125,7 @@ def compute_tier_bet_amounts_batch(
     probs: np.ndarray,
     **tier_kwargs,
 ) -> np.ndarray:
-    """Vectorized version of compute_tier_bet_amount."""
+    """compute_tier_bet_amount のベクトル化版。"""
     amounts = np.array([
         compute_tier_bet_amount(p, **tier_kwargs)
         for p in probs
@@ -140,20 +140,20 @@ def compute_bet_amount_dispatch(
     method: str = "tier",
     **kwargs,
 ) -> float:
-    """Dispatch to tier or kelly bet sizing based on method.
+    """method に応じてティアまたはケリーのサイジングにディスパッチする。
 
     Args:
-        prob: Estimated probability of winning.
-        odds: Decimal odds (required for kelly method).
-        bankroll: Current bankroll (required for kelly method).
-        method: "tier" or "kelly".
-        **kwargs: Additional keyword arguments passed to the underlying function.
+        prob: 勝利確率の推定値。
+        odds: オッズ(kelly メソッドで必須)。
+        bankroll: 現在のバンクロール(kelly メソッドで必須)。
+        method: "tier" または "kelly"。
+        **kwargs: 各下位関数に渡す追加のキーワード引数。
 
     Returns:
-        Bet amount (float).
+        賭け金(float)。
 
     Raises:
-        ValueError: If method is unknown, or if kelly is selected without odds/bankroll.
+        ValueError: method が不明な場合、または kelly 選択時に odds/bankroll が無い場合。
     """
     if method == "tier":
         tier_keys = {

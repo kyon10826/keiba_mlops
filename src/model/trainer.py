@@ -1,4 +1,4 @@
-"""LightGBM model training with Optuna hyperparameter optimization."""
+"""Optunaによるハイパーパラメータ最適化を用いたLightGBMモデルの学習。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from src.features.pipeline import CATEGORICAL_FEATURES
 
 
 def _get_categorical_indices(feature_columns: list[str]) -> list[int]:
-    """Get indices of categorical features in the feature column list."""
+    """特徴量列リスト内のカテゴリ特徴量のインデックスを取得する。"""
     return [i for i, c in enumerate(feature_columns) if c in CATEGORICAL_FEATURES]
 
 
@@ -28,9 +28,9 @@ def create_objective(
     cfg: dict,
     feature_columns: list[str],
 ) -> callable:
-    """Create an Optuna objective function.
+    """Optunaの目的関数を生成する。
 
-    Optimizes Brier score on the validation set.
+    検証セット上のBrierスコアを最適化する。
     """
     cat_indices = _get_categorical_indices(feature_columns)
     search = cfg["model"]["search_space"]
@@ -84,7 +84,7 @@ def create_objective(
             ),
         }
 
-        # DART does not support early stopping reliably
+        # DARTはearly stoppingを安定的にサポートしない
         use_early_stop = boosting_type != "dart"
 
         callbacks = [lgb.log_evaluation(period=0)]
@@ -119,7 +119,7 @@ def train_model(
     cfg: dict,
     feature_columns: list[str],
 ) -> tuple[lgb.Booster, optuna.Study]:
-    """Run Optuna optimization and train final model with best params.
+    """Optuna最適化を実行し、最良パラメータで最終モデルを学習する。
 
     Returns:
         (best_model, study)
@@ -140,7 +140,7 @@ def train_model(
     print(f"Best Brier score: {study.best_value:.6f}")
     print(f"Best params: {study.best_params}")
 
-    # Retrain with best params on full train+valid
+    # 最良パラメータでtrain+validの全データを使って再学習する
     best_params = study.best_params.copy()
     best_params.update({
         "objective": "binary",
@@ -169,11 +169,11 @@ def train_model(
 
 
 def save_model(model: lgb.Booster, path: str) -> None:
-    """Save LightGBM model."""
+    """LightGBMモデルを保存する。"""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     model.save_model(path)
 
 
 def load_model(path: str) -> lgb.Booster:
-    """Load LightGBM model."""
+    """LightGBMモデルを読み込む。"""
     return lgb.Booster(model_file=path)

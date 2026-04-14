@@ -1,4 +1,4 @@
-"""Sire (father) Bayesian statistics."""
+"""種牡馬 (父) のベイズ統計量。"""
 
 from __future__ import annotations
 
@@ -8,19 +8,19 @@ from scipy.stats import beta
 
 def compute_sire_stats(train_df: pd.DataFrame, alpha_prior: int = 2,
                        beta_prior: int = 5) -> pd.DataFrame:
-    """Compute Bayesian show-rate statistics per sire.
+    """種牡馬ごとのベイズ的な複勝率統計量を算出する。
 
-    Also computes turf/dirt split show rates.
+    芝/ダート別の複勝率も併せて算出する。
 
-    Returns a DataFrame with columns:
+    以下の列を持つ DataFrame を返す:
         father, sire_show_rate, sire_lcb95,
         sire_show_rate_turf, sire_show_rate_dirt
     """
     df = train_df.copy()
     df["_show"] = ((df["rank"] >= 1) & (df["rank"] <= 3)).astype(int)
-    df["_track_type"] = (df["track_code"] // 10) % 10  # 1=turf, 2=dirt
+    df["_track_type"] = (df["track_code"] // 10) % 10  # 1=芝, 2=ダート
 
-    # Overall
+    # 全体
     overall = df.groupby("father").agg(
         place_count=("_show", "sum"),
         total_count=("_show", "count"),
@@ -33,7 +33,7 @@ def compute_sire_stats(train_df: pd.DataFrame, alpha_prior: int = 2,
         beta.ppf(0.05, a, b) for a, b in zip(alpha_post, beta_post)
     ]
 
-    # Turf
+    # 芝
     turf = df[df["_track_type"] == 1].groupby("father").agg(
         turf_place=("_show", "sum"),
         turf_total=("_show", "count"),
@@ -42,7 +42,7 @@ def compute_sire_stats(train_df: pd.DataFrame, alpha_prior: int = 2,
         turf["turf_total"] + alpha_prior + beta_prior
     )
 
-    # Dirt
+    # ダート
     dirt = df[df["_track_type"] == 2].groupby("father").agg(
         dirt_place=("_show", "sum"),
         dirt_total=("_show", "count"),
@@ -63,7 +63,7 @@ def compute_sire_stats(train_df: pd.DataFrame, alpha_prior: int = 2,
         result["sire_show_rate"]
     )
 
-    # Global prior row: fallback values for unknown sires
+    # グローバル事前分布行: 未知の種牡馬向けのフォールバック値
     prior_mean = alpha_prior / (alpha_prior + beta_prior)
     prior_lcb = beta.ppf(0.05, alpha_prior, beta_prior)
     global_prior = pd.DataFrame([{
@@ -84,11 +84,10 @@ def add_sire_features(
     alpha_prior: int = 2,
     beta_prior: int = 5,
 ) -> pd.DataFrame:
-    """Merge sire stats and add father_encoded feature.
+    """種牡馬統計量をマージし、father_encoded 特徴量を追加する。
 
-    Unknown sires (not in sire_stats) are filled with the prior mean
-    instead of 0, so that cold-start horses still carry meaningful
-    sire information.
+    未知の種牡馬 (sire_stats に存在しない) は 0 ではなく事前分布の平均で
+    埋めるため、コールドスタートの馬でも意味のある種牡馬情報を保持できる。
     """
     out = df.copy()
 
@@ -100,7 +99,7 @@ def add_sire_features(
     sire_stats = sire_stats.copy()
     sire_stats["father"] = sire_stats["father"].astype(str)
 
-    # Extract prior fallback values from _GLOBAL_PRIOR_ row if available
+    # _GLOBAL_PRIOR_ 行が存在すればそこから事前分布のフォールバック値を取り出す
     prior_row = sire_stats[sire_stats["father"] == "_GLOBAL_PRIOR_"]
     if not prior_row.empty:
         fill_values = {
@@ -110,14 +109,14 @@ def add_sire_features(
             "sire_show_rate_dirt": prior_row.iloc[0]["sire_show_rate_dirt"],
         }
     else:
-        # Fallback: compute prior mean directly (backward compat with old sire_stats)
+        # フォールバック: 事前分布の平均を直接算出する (旧 sire_stats との後方互換)
         prior_mean = alpha_prior / (alpha_prior + beta_prior)
         fill_values = {col: prior_mean for col in [
             "sire_show_rate", "sire_lcb95",
             "sire_show_rate_turf", "sire_show_rate_dirt",
         ]}
 
-    # Merge excluding _GLOBAL_PRIOR_ sentinel row
+    # _GLOBAL_PRIOR_ センチネル行を除外してマージする
     merge_stats = sire_stats[sire_stats["father"] != "_GLOBAL_PRIOR_"]
     out = out.merge(
         merge_stats[["father", "sire_show_rate", "sire_lcb95",

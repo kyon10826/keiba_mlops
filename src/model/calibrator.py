@@ -1,7 +1,7 @@
-"""Probability calibration using holdout data.
+"""ホールドアウトデータを用いた確率キャリブレーション。
 
-Fixes the data leakage issue in the original notebook where calibration
-was performed on training data.
+元のノートブックで学習データ上でキャリブレーションを行っていた
+データリークの問題を修正する。
 """
 
 from __future__ import annotations
@@ -16,12 +16,12 @@ from sklearn.isotonic import IsotonicRegression
 
 
 class HoldoutCalibrator:
-    """Isotonic regression calibrator trained on a holdout split.
+    """ホールドアウト分割で学習するIsotonic回帰キャリブレータ。
 
-    Usage:
-        1. Split validation data into two halves.
-        2. Fit calibrator on the first half's raw predictions vs true labels.
-        3. Evaluate on the second half.
+    使い方:
+        1. 検証データを2つに分割する。
+        2. 前半の生予測と真のラベルでキャリブレータを学習する。
+        3. 後半で評価する。
     """
 
     def __init__(self, method: str = "isotonic"):
@@ -29,11 +29,11 @@ class HoldoutCalibrator:
         self.calibrator = IsotonicRegression(out_of_bounds="clip")
 
     def fit(self, raw_probs: np.ndarray, y_true: np.ndarray) -> None:
-        """Fit calibrator on holdout predictions."""
+        """ホールドアウト予測でキャリブレータを学習する。"""
         self.calibrator.fit(raw_probs, y_true)
 
     def predict(self, raw_probs: np.ndarray) -> np.ndarray:
-        """Calibrate raw probabilities."""
+        """生の確率をキャリブレーションする。"""
         return self.calibrator.predict(raw_probs)
 
     def save(self, path: str) -> None:
@@ -56,24 +56,24 @@ def calibrate_model(
     holdout_fraction: float = 0.5,
     seed: int = 17,
 ) -> tuple[HoldoutCalibrator, pd.DataFrame, pd.Series]:
-    """Calibrate model on holdout split of validation data.
+    """検証データのホールドアウト分割でモデルをキャリブレーションする。
 
-    Uses a temporal (front/back) split instead of random permutation
-    to prevent data leakage on time-series data.  The first
-    ``holdout_fraction`` of the validation set (earlier period) is used
-    for calibration, and the remainder (later period) for evaluation.
-    The caller is expected to pass validation data that is already
-    sorted chronologically.
+    時系列データでのデータリークを防ぐため、ランダムな並び替えではなく
+    時間順(前半/後半)の分割を使用する。検証データのうち最初の
+    ``holdout_fraction`` (より古い期間)をキャリブレーション用に、
+    残り(より新しい期間)を評価用に使用する。
+    呼び出し側は、時系列順にソートされた検証データを渡すことが
+    期待される。
 
     Args:
-        model: Trained LightGBM model
-        valid_x: Validation features (sorted by time)
-        valid_y: Validation labels (sorted by time)
-        holdout_fraction: Fraction used for calibration (rest for evaluation)
-        seed: Random seed (unused, kept for API compatibility)
+        model: 学習済みのLightGBMモデル
+        valid_x: 検証用特徴量(時系列順にソート済み)
+        valid_y: 検証用ラベル(時系列順にソート済み)
+        holdout_fraction: キャリブレーションに使う割合(残りは評価用)
+        seed: 乱数シード(未使用、API互換のため残している)
 
     Returns:
-        (calibrator, eval_x, eval_y) — calibrator and the evaluation split
+        (calibrator, eval_x, eval_y) — キャリブレータと評価用分割
     """
     n = len(valid_x)
     split = int(n * holdout_fraction)

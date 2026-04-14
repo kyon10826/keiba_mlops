@@ -1,7 +1,7 @@
-"""Race card (出馬表) and today's race list scraping from netkeiba.
+"""netkeibaから出馬表と当日のレース一覧をスクレイピングするモジュール。
 
-Improved version of the scrape functions originally in src/api/runner.py.
-runner.py is NOT modified here; ashigaru2 will update imports later.
+もともと src/api/runner.py にあったスクレイピング関数を改良したバージョン。
+ここでは runner.py は変更しない。ashigaru2 が後でimportを更新する。
 """
 
 from __future__ import annotations
@@ -33,17 +33,17 @@ def _request_with_retry(
     interval: float = 1.5,
     encoding: str = "EUC-JP",
 ) -> requests.Response | None:
-    """Send GET request with retry logic.
+    """リトライ機能付きでGETリクエストを送信する。
 
     Args:
-        url: Target URL.
-        max_retries: Maximum retry attempts.
-        timeout: Request timeout in seconds.
-        interval: Sleep interval between retries.
-        encoding: Response encoding.
+        url: 対象のURL。
+        max_retries: 最大リトライ回数。
+        timeout: リクエストのタイムアウト秒数。
+        interval: リトライ間のスリープ間隔。
+        encoding: レスポンスのエンコーディング。
 
     Returns:
-        Response object or None on failure.
+        レスポンスオブジェクト。失敗時はNone。
     """
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -77,21 +77,21 @@ def scrape_race_card(
     timeout: int = 30,
     interval: float = 1.5,
 ) -> pd.DataFrame | None:
-    """Scrape race entry table (出馬表) from netkeiba.
+    """netkeibaから出馬表をスクレイピングする。
 
     Args:
-        race_id: netkeiba race ID (12 digits).
-        max_retries: Maximum retry attempts.
-        timeout: Request timeout in seconds.
-        interval: Sleep interval between retries.
+        race_id: netkeibaのレースID（12桁）。
+        max_retries: 最大リトライ回数。
+        timeout: リクエストのタイムアウト秒数。
+        interval: リトライ間のスリープ間隔。
 
     Returns:
-        DataFrame with horse entries, or None on failure.
+        出走馬情報を含むDataFrame。失敗時はNone。
     """
-    # Determine if NAR (local) race
+    # NAR（地方競馬）レースかどうかを判定
     is_nar = is_nar_race(race_id)
 
-    # Try shutuba (race card) first, fall back to result page for past races
+    # まず出馬表ページを試し、過去レースの場合は結果ページにフォールバック
     if is_nar:
         url = f"{NAR_RACE_CARD_BASE}/race/shutuba.html?race_id={race_id}"
     else:
@@ -101,15 +101,15 @@ def scrape_race_card(
     is_result_page = False
     if resp is None:
         if is_nar:
-            # Fallback for NAR: try race.netkeiba.com
+            # NAR用フォールバック: race.netkeiba.com を試す
             url = f"{RACE_CARD_BASE}/race/shutuba.html?race_id={race_id}"
             resp = _request_with_retry(url, max_retries, timeout, interval)
         if resp is None:
-            # Fallback: try result page
+            # フォールバック: 結果ページを試す
             url = f"{RACE_CARD_BASE}/race/result.html?race_id={race_id}"
             resp = _request_with_retry(url, max_retries, timeout, interval)
             if resp is None:
-                # Fallback: try db.netkeiba.com
+                # フォールバック: db.netkeiba.com を試す
                 url = f"{DB_BASE}/race/{race_id}/"
                 resp = _request_with_retry(url, max_retries, timeout, interval)
                 if resp is None:
@@ -118,9 +118,9 @@ def scrape_race_card(
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # Try multiple table class names
-    # NAR pages have both ShutubaTable and Shutuba_Table, but Shutuba_Table
-    # on NAR is a different prediction table. Check ShutubaTable first.
+    # 複数のテーブルクラス名を試す
+    # NARページには ShutubaTable と Shutuba_Table の両方があるが、NARの Shutuba_Table
+    # は別の予想テーブルなので、まず ShutubaTable を確認する。
     if is_nar:
         horse_table = soup.find("table", class_="ShutubaTable")
         if not horse_table:
@@ -130,7 +130,7 @@ def scrape_race_card(
         if not horse_table:
             horse_table = soup.find("table", class_="ShutubaTable")
     if not horse_table:
-        # Try result table class names
+        # 結果テーブルのクラス名を試す
         horse_table = soup.find("table", class_="RaceTable01")
         if horse_table:
             is_result_page = True
@@ -151,7 +151,7 @@ def scrape_race_card(
         waku_text = cols[0].get_text(strip=True)
         hnum_text = cols[1].get_text(strip=True)
 
-        # Horse name & ID
+        # 馬名とID
         horse_link = cols[3].find("a")
         horse_name = horse_link.get_text(strip=True) if horse_link else ""
         horse_id = ""
@@ -160,15 +160,15 @@ def scrape_race_card(
             if m:
                 horse_id = m.group(1)
 
-        # Sex / Age
+        # 性別 / 年齢
         sex_age = cols[4].get_text(strip=True)
         sex = sex_age[0] if sex_age else ""
         age = sex_age[1:] if len(sex_age) > 1 else ""
 
-        # Basis weight
+        # 斤量
         weight_text = cols[5].get_text(strip=True)
 
-        # Jockey ID (NAR jockey IDs can be alphanumeric like "a0258")
+        # 騎手ID（NARの騎手IDは "a0258" のような英数字の場合がある）
         jockey_link = cols[6].find("a")
         jockey_id = ""
         if jockey_link and "href" in jockey_link.attrs:
@@ -178,17 +178,17 @@ def scrape_race_card(
                 if raw_id.isdigit():
                     jockey_id = raw_id
                 else:
-                    # Convert alphanumeric NAR jockey ID to integer hash
+                    # 英数字のNAR騎手IDを整数ハッシュに変換
                     jockey_id = str(int(raw_id, 16) if all(c in '0123456789abcdefABCDEF' for c in raw_id) else abs(hash(raw_id)) % (10**9))
 
-        # Trainer (optional, some tables have it)
+        # 調教師（任意、テーブルによっては含まれる）
         trainer = ""
         if len(cols) > 7:
             trainer_link = cols[7].find("a")
             if trainer_link:
                 trainer = trainer_link.get_text(strip=True)
 
-        # Odds (if available in race card - usually in cols[9] or later)
+        # オッズ（出馬表にあれば取得、通常は cols[9] 以降）
         odds = 0.0
         for c in cols[8:]:
             odds_text = c.get_text(strip=True)
@@ -199,7 +199,7 @@ def scrape_race_card(
                 except ValueError:
                     pass
 
-        # Popularity (人気)
+        # 人気
         pop = 0
         for c in cols[8:]:
             pop_text = c.get_text(strip=True)
@@ -227,9 +227,9 @@ def scrape_race_card(
 
     df = pd.DataFrame(race_data)
 
-    # --- Metadata integration ---
+    # --- メタデータの統合 ---
 
-    # 1. Parse race_id (12 digits: YYYYPPKKDDRR)
+    # 1. race_id をパース（12桁: YYYYPPKKDDRR）
     rid = str(race_id).zfill(12)
     r_year = int(rid[0:4])
     place_code = rid[4:6]
@@ -246,7 +246,7 @@ def scrape_race_card(
     df["race_num"] = r_race_num
     df["place"] = _CODE_TO_PLACE.get(place_code, "")
 
-    # 2. Race info from scrape_race_info()
+    # 2. scrape_race_info() からレース情報を取得
     info = scrape_race_info(race_id, max_retries, timeout, interval)
     if info:
         df["dist"] = info["dist"]
@@ -261,7 +261,7 @@ def scrape_race_card(
         df["weather"] = ""
         df["race_name"] = ""
 
-    # 3. class_code from race_name
+    # 3. レース名から class_code を判定
     rn = df["race_name"].iloc[0] if len(df) > 0 else ""
     if "G1" in rn or "GI" in rn:
         cc = 100
@@ -277,7 +277,7 @@ def scrape_race_card(
         cc = 0
     df["class_code"] = cc
 
-    # 4. Computed values
+    # 4. 計算値
     df["horse_N"] = len(df)
     df["rank"] = 0
     dist_val = df["dist"].iloc[0] if len(df) > 0 else 0
@@ -289,7 +289,7 @@ def scrape_race_card(
         cn = 4
     df["corner_num"] = cn
 
-    # 5. Father (pedigree) with progress
+    # 5. 父（血統情報）を進捗表示しながら取得
     fathers = []
     total = len(df)
     for i, row in df.iterrows():
@@ -313,19 +313,19 @@ def scrape_race_info(
     timeout: int = 30,
     interval: float = 1.5,
 ) -> dict | None:
-    """Get race metadata (distance, track, start time, condition, weather).
+    """レースのメタデータ（距離、コース、発走時刻、馬場状態、天候）を取得する。
 
     Args:
-        race_id: netkeiba race ID (12 digits).
-        max_retries: Maximum retry attempts.
-        timeout: Request timeout in seconds.
-        interval: Sleep interval between retries.
+        race_id: netkeibaのレースID（12桁）。
+        max_retries: 最大リトライ回数。
+        timeout: リクエストのタイムアウト秒数。
+        interval: リトライ間のスリープ間隔。
 
     Returns:
-        Dict with dist, track_code, start_time, state, weather, race_name.
-        None on failure.
+        dist, track_code, start_time, state, weather, race_name を含むdict。
+        失敗時はNone。
     """
-    # Determine if NAR (local) race
+    # NAR（地方競馬）レースかどうかを判定
     is_nar = is_nar_race(race_id)
 
     if is_nar:
@@ -334,7 +334,7 @@ def scrape_race_info(
         url = f"{RACE_CARD_BASE}/race/shutuba.html?race_id={race_id}"
     resp = _request_with_retry(url, max_retries, timeout, interval)
     if resp is None and is_nar:
-        # Fallback: try JRA URL
+        # フォールバック: JRAのURLを試す
         url = f"{RACE_CARD_BASE}/race/shutuba.html?race_id={race_id}"
         resp = _request_with_retry(url, max_retries, timeout, interval)
     if resp is None:
@@ -351,17 +351,17 @@ def scrape_race_info(
         "race_name": "",
     }
 
-    # Race data area
+    # レース情報エリア
     race_data_elem = soup.find("div", class_="RaceData01")
     if race_data_elem:
         text = race_data_elem.get_text()
 
-        # Distance
+        # 距離
         dist_m = re.search(r"(\d{3,4})m", text)
         if dist_m:
             result["dist"] = int(dist_m.group(1))
 
-        # Track type
+        # コース種別
         if "芝" in text:
             track_type = 1
         elif "ダ" in text:
@@ -370,34 +370,34 @@ def scrape_race_info(
             track_type = 0
         result["track_code"] = track_type * 10 + 1
 
-        # Condition
+        # 馬場状態
         cond_m = re.search(r"(良|稍重|重|不良)", text)
         if cond_m:
             result["state"] = cond_m.group(1)
 
-        # Weather
+        # 天候
         weather_m = re.search(r"天候\s*[:：]\s*(\S+)", text)
         if weather_m:
             result["weather"] = weather_m.group(1)
 
-    # Race data area 2 (additional info)
+    # レース情報エリア2（追加情報）
     race_data2 = soup.find("div", class_="RaceData02")
     if race_data2:
         text2 = race_data2.get_text()
-        # Weather might also be here
+        # ここに天候がある場合もある
         if not result["weather"]:
             weather_m = re.search(r"(晴|曇|雨|小雨|雪|小雪)", text2)
             if weather_m:
                 result["weather"] = weather_m.group(1)
 
-    # Start time
+    # 発走時刻
     time_elem = soup.find("dd", class_="Active")
     if time_elem:
         tm = re.search(r"(\d{1,2}:\d{2})", time_elem.get_text())
         if tm:
             result["start_time"] = tm.group(1)
 
-    # Race name (try multiple selectors)
+    # レース名（複数のセレクタを試す）
     race_name_elem = (
         soup.find("div", class_="RaceName")
         or soup.find("h1", class_="RaceName")
@@ -423,16 +423,16 @@ def get_horse_pedigree(
     timeout: int = 30,
     interval: float = 1.5,
 ) -> tuple[str, str]:
-    """Fetch horse's sire (father) and dam (mother) from netkeiba.
+    """netkeibaから馬の父と母を取得する。
 
     Args:
-        horse_id: netkeiba horse ID.
-        max_retries: Maximum retry attempts.
-        timeout: Request timeout in seconds.
-        interval: Sleep interval between retries.
+        horse_id: netkeibaの馬ID。
+        max_retries: 最大リトライ回数。
+        timeout: リクエストのタイムアウト秒数。
+        interval: リトライ間のスリープ間隔。
 
     Returns:
-        (father, mother) tuple. Empty strings on failure.
+        (父, 母) のタプル。失敗時は空文字列。
     """
     url = f"{DB_BASE}/horse/{horse_id}"
     resp = _request_with_retry(url, max_retries, timeout, interval)
@@ -446,7 +446,7 @@ def get_horse_pedigree(
 
     pedigree_table = soup.find("table", class_="blood_table")
 
-    # Fallback: try /horse/ped/ page (needed for NAR horses)
+    # フォールバック: /horse/ped/ ページを試す（NARの馬に必要）
     if not pedigree_table:
         ped_url = f"{DB_BASE}/horse/ped/{horse_id}/"
         ped_resp = _request_with_retry(ped_url, max_retries, timeout, interval)
@@ -454,13 +454,13 @@ def get_horse_pedigree(
             ped_soup = BeautifulSoup(ped_resp.text, "html.parser")
             pedigree_table = ped_soup.find("table", class_="blood_table")
     if pedigree_table:
-        # Father (sire) - first b_ml cell
+        # 父 - 最初の b_ml セル
         father_elem = pedigree_table.find("td", class_="b_ml")
         if father_elem:
             link = father_elem.find("a")
             father = link.get_text(strip=True) if link else ""
 
-        # Mother (dam) - in the 4th row's b_ml cell
+        # 母 - 4行目の b_ml セル
         rows = pedigree_table.find_all("tr")
         if len(rows) > 3:
             mother_elem = rows[3].find("td", class_="b_ml")
@@ -469,7 +469,7 @@ def get_horse_pedigree(
                 mother = link.get_text(strip=True) if link else ""
 
     logger.info("Pedigree for horse %s: father=%s, mother=%s", horse_id, father, mother)
-    time.sleep(0.5)  # Extra delay for horse DB pages
+    time.sleep(0.5)  # 馬のDBページ用に追加の待機
     return father, mother
 
 
@@ -479,16 +479,16 @@ def scrape_today_races(
     timeout: int = 30,
     interval: float = 1.5,
 ) -> list[dict]:
-    """Scrape today's race list from netkeiba.
+    """netkeibaから本日のレース一覧をスクレイピングする。
 
     Args:
-        date: Date string 'YYYYMMDD'. Defaults to today.
-        max_retries: Maximum retry attempts.
-        timeout: Request timeout in seconds.
-        interval: Sleep interval between retries.
+        date: 日付文字列 'YYYYMMDD'。省略時は本日。
+        max_retries: 最大リトライ回数。
+        timeout: リクエストのタイムアウト秒数。
+        interval: リトライ間のスリープ間隔。
 
     Returns:
-        List of dicts with race_id, place, race_num, race_name, start_time.
+        race_id, place, race_num, race_name, start_time を含むdictのリスト。
     """
     if date is None:
         date = datetime.now().strftime("%Y%m%d")
@@ -501,7 +501,7 @@ def scrape_today_races(
     soup = BeautifulSoup(resp.text, "html.parser")
     races = []
 
-    # Find race list items
+    # レース一覧の項目を検索
     race_items = soup.find_all("li", class_="RaceList_DataItem")
     for item in race_items:
         link = item.find("a")
@@ -514,17 +514,17 @@ def scrape_today_races(
             continue
         race_id = race_id_m.group(1)
 
-        # Race number
+        # レース番号
         race_num_elem = item.find("span", class_="Race_Num")
         race_num_text = race_num_elem.get_text(strip=True) if race_num_elem else ""
         race_num_m = re.search(r"(\d+)", race_num_text)
         race_num = int(race_num_m.group(1)) if race_num_m else 0
 
-        # Race name
+        # レース名
         race_name_elem = item.find("span", class_="ItemTitle")
         race_name = race_name_elem.get_text(strip=True) if race_name_elem else ""
 
-        # Start time
+        # 発走時刻
         time_elem = item.find("span", class_="RaceList_Itemtime")
         start_time = ""
         if time_elem:
@@ -532,7 +532,7 @@ def scrape_today_races(
             if tm:
                 start_time = tm.group(1)
 
-        # Place (from parent kaisai block)
+        # 開催場所（親の開催ブロックから取得）
         place = ""
         parent_block = item.find_parent("div", class_="RaceList_DataList")
         if parent_block:

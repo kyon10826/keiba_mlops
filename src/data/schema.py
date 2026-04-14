@@ -1,6 +1,6 @@
-"""Column definitions and type mappings for horse racing CSV data.
+"""競馬CSVデータのカラム定義と型マッピング。
 
-The data specification defines 47 columns per record.
+データ仕様では1レコードあたり47カラムが定義されている。
 """
 
 COLUMN_NAMES = [

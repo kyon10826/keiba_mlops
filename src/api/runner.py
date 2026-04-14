@@ -1,6 +1,6 @@
-"""Race day execution loop.
+"""レース当日の実行ループ。
 
-Fetches race data via scraping, predicts, and outputs recommendations.
+スクレイピングによりレースデータを取得し、予測を行い、推奨情報を出力する。
 """
 
 from __future__ import annotations
@@ -24,19 +24,19 @@ def predict_probs(
     feature_columns: list[str],
     calibrator,
 ) -> np.ndarray:
-    """Get calibrated prediction probabilities.
+    """キャリブレーション済みの予測確率を取得する。
 
-    Handles both sklearn-compatible models (predict_proba) and
-    LightGBM Booster (predict).
+    sklearn互換モデル（predict_proba）とLightGBM Booster（predict）の
+    両方に対応する。
 
     Args:
-        model: Trained model
-        data: Feature DataFrame
-        feature_columns: Feature column names
-        calibrator: Fitted calibrator
+        model: 学習済みモデル
+        data: 特徴量DataFrame
+        feature_columns: 特徴量カラム名
+        calibrator: フィット済みキャリブレータ
 
     Returns:
-        Array of calibrated probabilities
+        キャリブレーション済み確率の配列
     """
     if hasattr(model, "predict_proba"):
         raw_probs = model.predict_proba(data[feature_columns])[:, 1]
@@ -46,11 +46,11 @@ def predict_probs(
 
 
 def print_recommendations(recommendations_df: pd.DataFrame) -> None:
-    """Print bet recommendations to terminal in a readable table format.
+    """購入推奨情報を見やすい表形式でターミナルに出力する。
 
     Args:
-        recommendations_df: DataFrame with horse, horse_num, pred_prob,
-                            and optionally bet_amount columns
+        recommendations_df: horse、horse_num、pred_prob、および任意で
+                            bet_amountカラムを含むDataFrame
     """
     if recommendations_df.empty:
         print("  No recommendations for this race.")
@@ -86,22 +86,22 @@ def run_race_day(
     client: RaceDataClient,
     cfg: dict,
 ) -> list[dict]:
-    """Execute prediction for an entire race day and output recommendations.
+    """レース当日全体について予測を実行し、推奨情報を出力する。
 
-    Fetches real-time odds before each race, predicts win probabilities,
-    selects the best bet horse, and prints recommendations.
+    各レース前にリアルタイムのオッズを取得し、勝率を予測し、
+    最適な購入対象馬を選択し、推奨情報を表示する。
 
     Args:
-        timetable: Race schedule with place, race_num, start_time
-        test_df: Prepared test data with features and race IDs
-        model: Trained model (LightGBM Booster or sklearn-compatible)
-        calibrator: Fitted calibrator
-        feature_columns: Feature column names
-        client: Race data client (scraper-based)
-        cfg: Config dict
+        timetable: place、race_num、start_timeを含むレーススケジュール
+        test_df: 特徴量とレースIDを含む準備済みテストデータ
+        model: 学習済みモデル（LightGBM Boosterまたはsklearn互換）
+        calibrator: フィット済みキャリブレータ
+        feature_columns: 特徴量カラム名
+        client: レースデータクライアント（スクレイパーベース）
+        cfg: 設定辞書
 
     Returns:
-        List of recommendation dicts
+        推奨情報辞書のリスト
     """
     strat = cfg["strategy"]
     bankroll = float(strat["initial_bankroll"])
@@ -115,7 +115,7 @@ def run_race_day(
         race_num = race["race_num"]
         start_time = race["start_time"]
 
-        # Calculate wait time
+        # 待機時間を計算
         target = datetime.strptime(start_time, "%H:%M").replace(
             year=datetime.now().year,
             month=datetime.now().month,
@@ -135,7 +135,7 @@ def run_race_day(
         print(f"[{start_time}] {place} R{race_num} - waiting {int(wait)}s...")
         time.sleep(wait)
 
-        # Get race data
+        # レースデータを取得
         race_data = test_df[
             (test_df["place"] == place) & (test_df["race_num"] == race_num)
         ].copy()
@@ -144,12 +144,12 @@ def run_race_day(
             print(f"  No data for {place} R{race_num}")
             continue
 
-        # Fetch real-time odds via scraper
+        # スクレイパー経由でリアルタイムオッズを取得
         race_id_odds = str(race_data["race_id_odds"].iloc[0])
         odds_df = client.get_odds(race_id_odds)
 
         if odds_df is not None and not odds_df.empty:
-            # Merge scraped odds into race data
+            # スクレイピングしたオッズをレースデータにマージ
             if "horse_num" in odds_df.columns and "odds" in odds_df.columns:
                 odds_merge = odds_df[["horse_num", "odds"]].rename(
                     columns={"odds": "odds_rt"}
@@ -163,12 +163,12 @@ def run_race_day(
                     race_data["win_odds"]
                 )
 
-        # Predict (handles both LightGBM Booster and sklearn API)
+        # 予測（LightGBM Boosterとsklearn APIの両方に対応）
         race_data["pred_prob"] = predict_probs(
             model, race_data, feature_columns, calibrator
         )
 
-        # Select horse
+        # 馬を選択
         best = select_bet_horse(
             race_data,
             top_n_popularity=strat["top_n_popularity"],
@@ -179,7 +179,7 @@ def run_race_day(
             print(f"  No suitable bet for {place} R{race_num}")
             continue
 
-        # Compute recommended bet amount (Kelly)
+        # 推奨購入金額を計算（ケリー基準）
         show_odds_est = best["win_odds"] / 3.0
         bet_amount = compute_bet_amount(
             best["pred_prob"], show_odds_est, bankroll,
@@ -204,7 +204,7 @@ def run_race_day(
         }
         results.append(rec)
 
-        # Print recommendation
+        # 推奨情報を出力
         rec_df = build_recommendations(
             race_data,
             selected_horse_num=int(best["horse_num"]),

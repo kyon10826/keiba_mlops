@@ -1,4 +1,4 @@
-"""Model evaluation metrics and visualization."""
+"""モデルの評価指標と可視化。"""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def compute_metrics(
     y_true: np.ndarray,
     y_prob: np.ndarray,
 ) -> dict[str, float]:
-    """Compute AUC, Brier score, and log loss."""
+    """AUC、Brierスコア、対数損失を計算する。"""
     return {
         "auc_roc": roc_auc_score(y_true, y_prob),
         "brier_score": brier_score_loss(y_true, y_prob),
@@ -36,7 +36,7 @@ def threshold_analysis(
     odds: np.ndarray | None = None,
     thresholds: np.ndarray | None = None,
 ) -> pd.DataFrame:
-    """Compute hit rate and (optionally) recovery rate at various thresholds."""
+    """各閾値における的中率と(任意で)回収率を計算する。"""
     if thresholds is None:
         thresholds = np.arange(0.25, 0.80, 0.05)
 
@@ -53,7 +53,7 @@ def threshold_analysis(
                "hits": int(hits), "hit_rate": round(hit_rate, 4)}
 
         if odds is not None:
-            # Simple recovery rate: sum(odds * hit) / n_bets
+            # シンプルな回収率: sum(odds * hit) / n_bets
             payoff = (odds[mask] * y_true[mask]).sum()
             row["recovery_rate"] = round(payoff / total, 4)
 
@@ -68,7 +68,7 @@ def plot_calibration_curve(
     y_prob_calibrated: np.ndarray,
     save_path: str | None = None,
 ) -> None:
-    """Plot calibration curve comparing raw and calibrated predictions."""
+    """生の予測とキャリブレーション後の予測を比較するキャリブレーション曲線を描画する。"""
     fig, ax = plt.subplots(1, 1, figsize=(8, 6))
 
     for label, probs in [("Raw", y_prob_raw), ("Calibrated", y_prob_calibrated)]:
@@ -94,7 +94,7 @@ def plot_feature_importance(
     top_n: int = 20,
     save_path: str | None = None,
 ) -> None:
-    """Plot LightGBM feature importance (gain)."""
+    """LightGBMの特徴量重要度(gain)を描画する。"""
     importance = model.feature_importance(importance_type="gain")
     indices = np.argsort(importance)[-top_n:]
 
@@ -122,13 +122,13 @@ def evaluate_model(
     output_dir: str = "./models",
     odds: np.ndarray | None = None,
 ) -> dict:
-    """Run full evaluation and save plots.
+    """評価一式を実行し、プロットを保存する。
 
     Args:
-        odds: Array of payout odds aligned with eval_x/eval_y.
-              When provided, recovery rate is included in threshold analysis.
+        odds: eval_x/eval_yに対応する払戻オッズの配列。
+              指定された場合、閾値分析に回収率が含まれる。
 
-    Returns dict of metrics.
+    評価指標の辞書を返す。
     """
     raw_probs = model.predict(eval_x)
     cal_probs = calibrator.predict(raw_probs)
@@ -145,7 +145,7 @@ def evaluate_model(
         print(f"  {k}: {v:.4f}")
     print("=" * 50)
 
-    # Plots
+    # プロット
     plot_calibration_curve(
         eval_y.values, raw_probs, cal_probs,
         save_path=os.path.join(output_dir, "calibration_curve.png"),
@@ -155,7 +155,7 @@ def evaluate_model(
         save_path=os.path.join(output_dir, "feature_importance.png"),
     )
 
-    # Threshold analysis
+    # 閾値分析
     thr_df = threshold_analysis(eval_y.values, cal_probs, odds=odds)
     print("\nThreshold analysis:")
     print(thr_df.to_string(index=False))

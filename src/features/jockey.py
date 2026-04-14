@@ -1,4 +1,4 @@
-"""Jockey Bayesian statistics and rolling features."""
+"""騎手のベイズ統計量およびローリング特徴量。"""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ from scipy.stats import beta
 
 def compute_jockey_stats(train_df: pd.DataFrame, alpha_prior: int = 2,
                          beta_prior: int = 5) -> pd.DataFrame:
-    """Compute Bayesian show-rate statistics per jockey from training data.
+    """学習データから騎手ごとのベイズ的な複勝率統計量を算出する。
 
-    Returns a DataFrame with columns:
+    以下の列を持つ DataFrame を返す:
         jockey_id, place_count, total_count, jockey_show_rate, jockey_win_rate,
         jockey_race_count, jockey_lcb95
     """
@@ -40,15 +40,15 @@ def compute_jockey_stats(train_df: pd.DataFrame, alpha_prior: int = 2,
 
 
 def add_jockey_features(df: pd.DataFrame, jockey_stats: pd.DataFrame) -> pd.DataFrame:
-    """Merge jockey stats and add jockey_encoded feature."""
+    """騎手統計量をマージし、jockey_encoded 特徴量を追加する。"""
     out = df.copy()
 
-    # Label encoding
+    # ラベルエンコーディング
     jockeys = out["jockey_id"].unique()
     jockey_map = {j: i for i, j in enumerate(sorted(jockeys))}
     out["jockey_encoded"] = out["jockey_id"].map(jockey_map).fillna(0).astype(int)
 
-    # Merge Bayesian stats
+    # ベイズ統計量をマージ
     out = out.merge(
         jockey_stats[["jockey_id", "jockey_show_rate", "jockey_win_rate",
                        "jockey_race_count", "jockey_lcb95"]],
