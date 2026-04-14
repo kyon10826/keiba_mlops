@@ -1,0 +1,101 @@
+data:
+  dir: "./data"
+  encoding: "shift_jis"
+  train_years: [2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024]
+  valid_year: 2024
+  valid_split_month: 7  # 1-6月をvalid, 7-12月をtest
+  test_years: []
+  train_file_pattern: "record_data_{year}.csv"
+  test_file_pattern: "record_data_{year}_*.csv"
+
+model:
+  dir: "./models"
+  type: "lightgbm"
+  objective: "binary"
+  metric: "binary_logloss"
+  seed: 17
+  optuna:
+    n_trials: 10
+    timeout: 600  # seconds
+  search_space:
+    boosting_type: ["gbdt", "dart"]
+    learning_rate: [0.005, 0.1]  # log-uniform
+    num_leaves: [20, 300]
+    max_depth: [3, 12]
+    min_child_samples: [5, 100]
+    subsample: [0.5, 1.0]
+    colsample_bytree: [0.3, 1.0]
+    reg_alpha: [1.0e-8, 10.0]  # log-uniform
+    reg_lambda: [1.0e-8, 10.0]  # log-uniform
+  early_stopping_rounds: 100
+  max_iterations: 1000
+  categorical_features: ["place_encoded", "track_type", "dist_category",
+                          "condition_encoded", "weather_encoded",
+                          "father_encoded", "jockey_encoded"]
+
+calibration:
+  method: "isotonic"
+  holdout_fraction: 0.5  # 50% of validation for calibration, 50% for evaluation
+
+bayesian:
+  alpha_prior: 2
+  beta_prior: 5
+
+strategy:
+  min_expected_value: 1.0
+  top_n_popularity: 3
+  kelly_fraction: 0.25  # quarter Kelly
+  max_bet_fraction: 0.05  # max 5% of bankroll
+  min_bet: 100
+  initial_bankroll: 1000000
+  pre_race_seconds: 250  # 4min 10sec before race
+  show_min_ev: 1.0          # 複勝のEV閾値
+  win_min_ev: 1.2           # 単勝のEV閾値（複勝より高め）
+  trio_top_n: 5             # 三連複の候補馬数
+  trio_max_display: 5       # 三連複の表示件数
+  trifecta_top_n: 5         # 三連単の候補馬数
+  trifecta_max_display: 10  # 三連単の表示件数
+
+  # フリーレン方式の設定
+  selection_method: "threshold"  # "threshold" (フリーレン) or "ev" (従来)
+  prob_threshold: 0.3            # 購入判定の最低予測確率
+  max_popularity: 3              # 人気上位N頭から選定
+
+  # 総合評価アルゴリズム設定
+  algorithm:
+    enabled: false  # trueで新アルゴリズム有効化 (--algorithm フラグでも可)
+    pre_screen:
+      min_field_size: 8
+      min_max_prob: 0.5
+      skip_maiden: true
+      skip_obstacle: true
+      skip_handicap: true
+      skip_age_limited: true
+    ability:
+      dominance_rpr_threshold: 0.65
+      dominance_gap_threshold: 0.10
+    discount:
+      long_layoff_days: 180
+      old_age_threshold: 8
+      low_jockey_lcb95: 0.15
+      excessive_popularity_odds: 2.0
+    plus:
+      blinker_bonus: 0.03
+      lone_frontrunner_bonus: 0.05
+      top_jockey_bonus: 0.03
+    popular_jockey_ids: [1088, 5339]  # 川田, ルメール
+
+  # ポイント分配方式（フリーレン）
+  bet_sizing: "tier"             # "tier" (フリーレン) or "kelly" (従来)
+  tier_low_threshold: 0.3        # Buy Low の境界
+  tier_mid_threshold: 0.4        # Buy の境界
+  tier_high_threshold: 0.5       # Buy Aggressive の境界
+  tier_low_amount: 100           # Buy Low の額
+  tier_mid_amount: 300           # Buy の額
+  tier_high_amount: 500          # Buy Aggressive の額
+
+scraper:
+  base_url: "https://db.netkeiba.com"
+  race_url: "https://race.netkeiba.com"
+  request_interval: 1.5
+  cache_dir: "./cache"

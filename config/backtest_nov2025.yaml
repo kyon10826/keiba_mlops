@@ -1,0 +1,98 @@
+data:
+  dir: "./data"
+  encoding: "shift_jis"
+  train_years: [2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024]
+  valid_year: 2024
+  valid_split_month: 13  # 全2024をvalidにしてtest_from_validを空にする
+  test_years: [2025]
+  train_file_pattern: "record_data_{year}.csv"
+  test_file_pattern: "record_data_{year}_*.csv"
+
+model:
+  dir: "./models"
+  type: "lightgbm"
+  objective: "binary"
+  metric: "binary_logloss"
+  seed: 17
+  optuna:
+    n_trials: 10
+    timeout: 600
+  search_space:
+    boosting_type: ["gbdt", "dart"]
+    learning_rate: [0.005, 0.1]
+    num_leaves: [20, 300]
+    max_depth: [3, 12]
+    min_child_samples: [5, 100]
+    subsample: [0.5, 1.0]
+    colsample_bytree: [0.3, 1.0]
+    reg_alpha: [1.0e-8, 10.0]
+    reg_lambda: [1.0e-8, 10.0]
+  early_stopping_rounds: 100
+  max_iterations: 1000
+  categorical_features: ["place_encoded", "track_type", "dist_category",
+                          "condition_encoded", "weather_encoded",
+                          "father_encoded", "jockey_encoded"]
+
+calibration:
+  method: "isotonic"
+  holdout_fraction: 0.5
+
+bayesian:
+  alpha_prior: 2
+  beta_prior: 5
+
+strategy:
+  min_expected_value: 1.0
+  top_n_popularity: 3
+  kelly_fraction: 0.25
+  max_bet_fraction: 0.05
+  min_bet: 100
+  initial_bankroll: 1000000
+  pre_race_seconds: 250
+  show_min_ev: 1.0
+  win_min_ev: 1.2
+  trio_top_n: 5
+  trio_max_display: 5
+  trifecta_top_n: 5
+  trifecta_max_display: 10
+
+  selection_method: "threshold"
+  prob_threshold: 0.3
+  max_popularity: 3
+
+  algorithm:
+    enabled: false
+    pre_screen:
+      min_field_size: 8
+      min_max_prob: 0.5
+      skip_maiden: true
+      skip_obstacle: true
+      skip_handicap: true
+      skip_age_limited: true
+    ability:
+      dominance_rpr_threshold: 0.65
+      dominance_gap_threshold: 0.10
+    discount:
+      long_layoff_days: 180
+      old_age_threshold: 8
+      low_jockey_lcb95: 0.15
+      excessive_popularity_odds: 2.0
+    plus:
+      blinker_bonus: 0.03
+      lone_frontrunner_bonus: 0.05
+      top_jockey_bonus: 0.03
+    popular_jockey_ids: [1088, 5339]
+
+  bet_sizing: "tier"
+  tier_low_threshold: 0.3
+  tier_mid_threshold: 0.4
+  tier_high_threshold: 0.5
+  tier_low_amount: 100
+  tier_mid_amount: 300
+  tier_high_amount: 500
+
+scraper:
+  base_url: "https://db.netkeiba.com"
+  race_url: "https://race.netkeiba.com"
+  request_interval: 1.5
+  cache_dir: "./cache"
