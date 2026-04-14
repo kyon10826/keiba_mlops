@@ -99,7 +99,7 @@ def select_bet_horse_threshold(
     top_n_popularity: int | None = None,
     **_kwargs,
 ) -> pd.Series | None:
-    """閾値方式 (Frieren アプローチ) を用いて馬を選定する。
+    """閾値方式で馬を選定する。
 
     戦略:
         1. pred_prob >= prob_threshold を満たす馬に絞り込む
@@ -204,7 +204,7 @@ def select_bets_dispatch(
 
     Args:
         df: 全レースデータの DataFrame
-        method: 選定方式。"threshold" は Frieren アプローチ、"ev" は期待値ベース
+        method: 選定方式。"threshold" は閾値アプローチ、"ev" は期待値ベース
         race_key: レースをグループ化する列
         **kwargs: 選定メソッドに渡す追加引数
 

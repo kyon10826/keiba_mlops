@@ -56,8 +56,8 @@ strategy:
   trifecta_top_n: 5         # 三連単の候補馬数
   trifecta_max_display: 10  # 三連単の表示件数
 
-  # フリーレン方式の設定
-  selection_method: "threshold"  # "threshold" (フリーレン) or "ev" (従来)
+  # 方式の設定
+  selection_method: "threshold"  # "threshold"  or "ev" 
   prob_threshold: 0.3            # 購入判定の最低予測確率
   max_popularity: 3              # 人気上位N頭から選定
 
@@ -85,8 +85,8 @@ strategy:
       top_jockey_bonus: 0.03
     popular_jockey_ids: [1088, 5339]  # 川田, ルメール
 
-  # ポイント分配方式（フリーレン）
-  bet_sizing: "tier"             # "tier" (フリーレン) or "kelly" (従来)
+  # ポイント分配方式
+  bet_sizing: "tier"             # "tier"  or "kelly" 
   tier_low_threshold: 0.3        # Buy Low の境界
   tier_mid_threshold: 0.4        # Buy の境界
   tier_high_threshold: 0.5       # Buy Aggressive の境界

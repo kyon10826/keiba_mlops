@@ -34,7 +34,7 @@ def simulate_backtest(
     min_bet = strat["min_bet"]
     bet_sizing = strat.get("bet_sizing", "kelly")
 
-    # ティアパラメータ (Frieren 方式用)
+    # ティアパラメータ (閾値方式用)
     tier_kwargs = {
         k: strat[k] for k in [
             "tier_low_threshold", "tier_mid_threshold", "tier_high_threshold",

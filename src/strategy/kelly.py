@@ -95,7 +95,7 @@ def compute_tier_bet_amount(
     tier_mid_amount: float = 300.0,
     tier_high_amount: float = 500.0,
 ) -> float:
-    """ティアベースのサイジング(Frieren方式)で賭け金を計算する。
+    """ティアベースのサイジング(閾値方式)で賭け金を計算する。
 
     予測確率のティアに基づいて賭け金を割り当てる:
     - prob >= tier_high_threshold → 強気買い (tier_high_amount)

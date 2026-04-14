@@ -53,7 +53,7 @@ def recommend_show(
         kelly_frac: ケリー倍率(method="ev" 時)。
         max_bet_fraction: バンクロール比の最大賭け金(method="ev" 時)。
         min_bet: 最小賭け金(method="ev" 時)。
-        method: "threshold"(Frieren 方式)または "ev"(従来方式)。
+        method: "threshold"(閾値方式)または "ev"(従来方式)。
         prob_threshold: 閾値方式での最小 pred_prob。
         **tier_kwargs: compute_tier_bet_amount に渡すティアサイジングパラメータ。
 
@@ -175,7 +175,7 @@ def recommend_win(
         kelly_frac: ケリー倍率(method="ev" 時)。
         max_bet_fraction: バンクロール比の最大賭け金(method="ev" 時)。
         min_bet: 最小賭け金(method="ev" 時)。
-        method: "threshold"(Frieren 方式)または "ev"(従来方式)。
+        method: "threshold"(閾値方式)または "ev"(従来方式)。
         prob_threshold: 閾値方式での最小 pred_prob。
         **tier_kwargs: compute_tier_bet_amount に渡すティアサイジングパラメータ。
 
@@ -286,7 +286,7 @@ def recommend_trio(
             列: horse1, horse2, horse3, odds, popularity。
             馬番は1始まり。
         min_ev: 最小期待値閾値(method="ev" かつオッズが利用可能な場合のみ適用)。
-        method: "threshold"(Frieren 方式)または "ev"(従来方式)。
+        method: "threshold"(閾値方式)または "ev"(従来方式)。
 
     Returns:
         次の列を持つ DataFrame: horse1, horse2, horse3, trio_prob, odds, ev。
@@ -367,7 +367,7 @@ def recommend_trifecta(
             列: horse1, horse2, horse3, odds, popularity。
             馬番は1始まり、順序は意味を持つ(1着・2着・3着)。
         min_ev: 最小期待値閾値(method="ev" かつオッズが利用可能な場合のみ適用)。
-        method: "threshold"(Frieren 方式)または "ev"(従来方式)。
+        method: "threshold"(閾値方式)または "ev"(従来方式)。
 
     Returns:
         次の列を持つ DataFrame: horse1, horse2, horse3, harville_prob, odds, ev。
@@ -455,7 +455,7 @@ def generate_full_recommendation(
         top_n: 三連複・三連単の組み合わせで用いる上位 N 頭。
         trio_odds_df: 三連複オッズの DataFrame(任意)。
         trifecta_odds_df: 三連単オッズの DataFrame(任意)。
-        method: "threshold"(Frieren 方式)または "ev"(従来方式)。
+        method: "threshold"(閾値方式)または "ev"(従来方式)。
         prob_threshold: 閾値方式での最小 pred_prob。
         **tier_kwargs: compute_tier_bet_amount に渡すティアサイジングパラメータ。
 

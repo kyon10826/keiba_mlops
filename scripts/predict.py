@@ -101,7 +101,7 @@ def main():
     parser.add_argument("--date", default=None, help="Target date YYYYMMDD (all races)")
     parser.add_argument("--bankroll", type=float, default=None, help="Current bankroll")
     parser.add_argument("--no-odds", action="store_true",
-                        help="Skip odds fetching (Frieren threshold mode)")
+                        help="Skip odds fetching (threshold mode)")
     parser.add_argument("--algorithm", action="store_true",
                         help="Use comprehensive evaluation algorithm (総合評価アルゴリズム)")
     args = parser.parse_args()
@@ -246,7 +246,7 @@ def main():
         available_keys = [k for k in race_key if k in race_feat.columns]
 
         if selection_method == "threshold":
-            print("Applying Frieren threshold ensemble...")
+            print("Applying threshold ensemble...")
             if available_keys:
                 for _, grp in race_feat.groupby(available_keys):
                     idx = grp.index
@@ -302,7 +302,7 @@ def main():
     )
 
     if selection_method == "threshold":
-        method_label = "Frieren Threshold"
+        method_label = "Threshold"
     else:
         method_label = "Legacy EV"
 
