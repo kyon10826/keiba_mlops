@@ -17,9 +17,23 @@ import pandas as pd
 
 from src.data.loader import load_all_data, load_config, filter_errors
 from src.features.pipeline import FeaturePipeline, FEATURE_COLUMNS, build_target
+from src.features.odds_timeseries import (
+    EXTRA_ANABA_BASE_COLUMNS,
+    TS_ODDS_FEATURE_COLUMNS,
+    build_target_anaba,
+    load_ts_odds_features,
+    merge_ts_odds_features,
+)
 from src.model.trainer import train_model, save_model
 from src.model.calibrator import calibrate_model
 from src.model.evaluator import evaluate_model
+from src.model.anaba_trainer import (
+    evaluate_anaba,
+    get_anaba_feature_columns,
+    save_anaba_meta,
+    save_anaba_model,
+    train_anaba_model,
+)
 
 
 def main():
@@ -136,7 +150,143 @@ def main():
     print(f"  Model saved to: {model_dir}/lgbm_model.txt")
     print(f"  Calibrator saved to: {model_dir}/calibrator.pkl")
     print(f"  Pipeline saved to: {model_dir}/pipeline.pkl")
+
+    # ================================================================
+    # ステップ 7+: 穴馬予測ヘッドの学習 (config で有効化されている場合)
+    # ================================================================
+    anaba_cfg = cfg.get("anaba", {})
+    if anaba_cfg.get("enabled", False):
+        train_anaba_head(
+            cfg=cfg,
+            train_df=train_df,
+            valid_df=valid_df,
+            test_df=test_df,
+            all_transformed=all_transformed,
+            available_features=available_features,
+            n_train=n_train,
+            n_valid=n_valid,
+            model_dir=model_dir,
+        )
+
     print("\nTraining complete!")
+
+
+def train_anaba_head(
+    cfg: dict,
+    train_df: pd.DataFrame,
+    valid_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    all_transformed: pd.DataFrame,
+    available_features: list[str],
+    n_train: int,
+    n_valid: int,
+    model_dir: str,
+) -> None:
+    """穴馬予測ヘッドを学習・保存する。
+
+    既存の複勝モデルとは独立に LightGBM を学習する。
+    時系列オッズ特徴量を ``odds_timeseries.enabled=true`` のとき取り込む。
+    """
+    anaba_cfg = cfg["anaba"]
+    ts_cfg = cfg.get("odds_timeseries", {})
+    use_ts_odds = bool(anaba_cfg.get("use_ts_odds", True) and ts_cfg.get("enabled", False))
+    min_pop = int(anaba_cfg.get("min_pop", 5))
+
+    print("\n" + "=" * 60)
+    print(f"Step 7: Training anaba (穴馬) head | min_pop={min_pop}, use_ts_odds={use_ts_odds}")
+    print("=" * 60)
+
+    # 時系列オッズ特徴量をマージする (有効時のみ)
+    if use_ts_odds:
+        years = sorted(set(
+            list(cfg["data"]["train_years"])
+            + [cfg["data"]["valid_year"]]
+            + list(cfg["data"].get("test_years") or [])
+        ))
+        print(f"  Loading TS odds for years: {years}")
+        ts_features = load_ts_odds_features(
+            ts_odds_dir=ts_cfg["dir"],
+            years=years,
+            cache_dir=ts_cfg.get("cache_dir"),
+            verbose=True,
+        )
+        print(f"  TS features rows: {len(ts_features)}")
+        if not ts_features.empty:
+            # all_transformed には race_id / horse_num が含まれているはず
+            # merge_ts_odds_features 内で先頭16桁化のための race_id_ts 列を一時的に作る
+            merged = merge_ts_odds_features(all_transformed, ts_features)
+        else:
+            print("  WARNING: TS features empty. Falling back to base features only.")
+            use_ts_odds = False
+            merged = all_transformed.copy()
+            for col in TS_ODDS_FEATURE_COLUMNS:
+                merged[col] = 0.0
+            merged["has_ts_odds"] = 0
+    else:
+        merged = all_transformed.copy()
+        for col in TS_ODDS_FEATURE_COLUMNS:
+            merged[col] = 0.0
+        merged["has_ts_odds"] = 0
+
+    feature_columns = get_anaba_feature_columns(
+        base_columns=available_features,
+        ts_columns=TS_ODDS_FEATURE_COLUMNS,
+        use_ts_odds=use_ts_odds,
+        extra_base_columns=EXTRA_ANABA_BASE_COLUMNS,
+    )
+    print(f"  Anaba feature count: {len(feature_columns)}")
+
+    # pop, win_odds の欠損補完 (NaN → 0; 学習データには十分な値があるので影響軽微)
+    for col in EXTRA_ANABA_BASE_COLUMNS:
+        if col not in merged.columns:
+            merged[col] = 0.0
+        else:
+            merged[col] = pd.to_numeric(merged[col], errors="coerce").fillna(0.0)
+
+    # 分割
+    train_feat = merged.iloc[:n_train].reset_index(drop=True)
+    valid_feat = merged.iloc[n_train:n_train + n_valid].reset_index(drop=True)
+    test_feat = merged.iloc[n_train + n_valid:].reset_index(drop=True)
+
+    train_x = train_feat[feature_columns]
+    valid_x = valid_feat[feature_columns]
+    test_x = test_feat[feature_columns]
+
+    train_y = build_target_anaba(train_feat, min_pop=min_pop)
+    valid_y = build_target_anaba(valid_feat, min_pop=min_pop)
+    test_y = build_target_anaba(test_feat, min_pop=min_pop)
+
+    if int(train_y.sum()) == 0:
+        print("  ERROR: No positive anaba samples in train set. Skipping anaba training.")
+        return
+
+    anaba_model, anaba_study = train_anaba_model(
+        train_x, train_y, valid_x, valid_y, cfg, feature_columns,
+    )
+
+    # 評価
+    print("\n  Anaba evaluation (test set):")
+    test_metrics = evaluate_anaba(anaba_model, test_x, test_y)
+    for k, v in test_metrics.items():
+        if isinstance(v, float):
+            print(f"    {k}: {v:.4f}")
+        else:
+            print(f"    {k}: {v}")
+
+    # 保存
+    save_anaba_model(anaba_model, os.path.join(model_dir, "anaba_model.txt"))
+    save_anaba_meta(
+        {
+            "feature_columns": feature_columns,
+            "min_pop": min_pop,
+            "use_ts_odds": use_ts_odds,
+            "test_metrics": test_metrics,
+            "best_params": anaba_study.best_params,
+        },
+        os.path.join(model_dir, "anaba_meta.pkl"),
+    )
+    print(f"  Anaba model saved to: {model_dir}/anaba_model.txt")
+    print(f"  Anaba meta saved to:  {model_dir}/anaba_meta.pkl")
 
 
 if __name__ == "__main__":

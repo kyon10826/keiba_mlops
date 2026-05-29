@@ -431,6 +431,84 @@ def recommend_trifecta(
     return result
 
 
+def recommend_anaba(
+    race_feat: pd.DataFrame,
+    score_threshold: float = 0.15,
+    min_pop: int = 5,
+    max_display: int = 5,
+    bankroll: float = 1_000_000,
+    kelly_frac: float = 0.25,
+    max_bet_fraction: float = 0.05,
+    min_bet: float = 100.0,
+) -> pd.DataFrame:
+    """穴馬予測ヘッドのスコアを使って単勝の穴馬候補を抽出する。
+
+    候補条件:
+        - ``anaba_prob >= score_threshold``
+        - pop が利用可能なら ``pop >= min_pop`` を満たす馬を優先表示
+
+    EV / bet_amount は ``win_odds`` がある場合のみ計算する (穴馬は配当が高いので
+    Kelly が過剰賭けに振れやすい → kelly_frac を 0.25 など小さめに使う想定)。
+
+    Returns:
+        DataFrame (anaba_prob 降順):
+            horse_num, horse, anaba_prob, pred_prob, pop, win_odds, ev, bet_amount,
+            ts_win_drop_pct, ts_win_late_drop_pct
+    """
+    out_cols = [
+        "horse_num", "horse", "anaba_prob", "pred_prob", "pop", "win_odds",
+        "ev", "bet_amount", "ts_win_drop_pct", "ts_win_late_drop_pct",
+    ]
+    if race_feat.empty or "anaba_prob" not in race_feat.columns:
+        return pd.DataFrame(columns=out_cols)
+
+    df = race_feat.copy()
+    df["anaba_prob"] = pd.to_numeric(df["anaba_prob"], errors="coerce").fillna(0.0)
+    candidates = df[df["anaba_prob"] >= score_threshold].copy()
+    if candidates.empty:
+        return pd.DataFrame(columns=out_cols)
+
+    if "pop" in candidates.columns:
+        candidates["pop"] = pd.to_numeric(candidates["pop"], errors="coerce").fillna(0).astype(int)
+    else:
+        candidates["pop"] = 0
+
+    # 期待値計算 (win_odds が >0 のもののみ; 取消や未取得は ev=NaN)
+    if "win_odds" in candidates.columns:
+        win_odds = pd.to_numeric(candidates["win_odds"], errors="coerce")
+        candidates["win_odds"] = win_odds
+        candidates["ev"] = candidates["anaba_prob"] * win_odds
+        candidates["bet_amount"] = candidates.apply(
+            lambda row: compute_bet_amount(
+                prob=row["anaba_prob"],
+                odds=row["win_odds"],
+                bankroll=bankroll,
+                fraction=kelly_frac,
+                max_bet_fraction=max_bet_fraction,
+                min_bet=min_bet,
+            ) if pd.notna(row["win_odds"]) and row["win_odds"] > 0 else 0.0,
+            axis=1,
+        )
+    else:
+        candidates["win_odds"] = pd.NA
+        candidates["ev"] = pd.NA
+        candidates["bet_amount"] = 0.0
+
+    for col in ["ts_win_drop_pct", "ts_win_late_drop_pct"]:
+        if col not in candidates.columns:
+            candidates[col] = pd.NA
+
+    if "horse" not in candidates.columns:
+        candidates["horse"] = ""
+
+    # 人気薄優先 (pop >= min_pop) を上にしつつ、anaba_prob 降順
+    candidates["_is_long"] = (candidates["pop"] >= min_pop).astype(int)
+    result = candidates.sort_values(
+        ["_is_long", "anaba_prob"], ascending=[False, False],
+    ).head(max_display).drop(columns=["_is_long"]).reset_index(drop=True)
+    return result[out_cols]
+
+
 def generate_full_recommendation(
     race_feat: pd.DataFrame,
     min_ev: float = 1.0,
@@ -441,6 +519,9 @@ def generate_full_recommendation(
     trifecta_odds_df: pd.DataFrame | None = None,
     method: str = "threshold",
     prob_threshold: float = 0.3,
+    anaba_score_threshold: float | None = None,
+    anaba_min_pop: int = 5,
+    anaba_max_display: int = 5,
     **tier_kwargs,
 ) -> dict[str, pd.DataFrame]:
     """全ての馬券種について推奨を生成する。
@@ -487,5 +568,16 @@ def generate_full_recommendation(
         race_feat, top_n=top_n, trifecta_odds_df=trifecta_odds_df, min_ev=min_ev,
         method=method,
     )
+
+    # 穴馬の推奨 (anaba_prob 列がある場合のみ)
+    if anaba_score_threshold is not None:
+        result["anaba"] = recommend_anaba(
+            race_feat,
+            score_threshold=anaba_score_threshold,
+            min_pop=anaba_min_pop,
+            max_display=anaba_max_display,
+            bankroll=bankroll,
+            kelly_frac=kelly_frac,
+        )
 
     return result

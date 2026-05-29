@@ -22,10 +22,19 @@ import pandas as pd
 from src.data.loader import load_config, load_train_data, load_valid_data
 from src.data.schema import COLUMN_NAMES
 from src.features.pipeline import FeaturePipeline, FEATURE_COLUMNS
+from src.features.odds_timeseries import (
+    EXTRA_ANABA_BASE_COLUMNS,
+    TS_ODDS_FEATURE_COLUMNS,
+    load_ts_odds_features,
+    merge_ts_odds_features,
+)
 from src.model.trainer import load_model
 from src.model.calibrator import HoldoutCalibrator
+from src.model.anaba_trainer import load_anaba_meta, load_anaba_model
 from src.strategy.selector import select_bets_for_all_races, select_bets_dispatch
-from src.strategy.kelly import compute_bet_amount, compute_bet_amount_dispatch
+from src.strategy.kelly import (
+    compute_bet_amount, compute_bet_amount_dispatch, size_bets_per_race,
+)
 from src.strategy.recommender import generate_full_recommendation
 from src.strategy.algorithm import run_full_evaluation, print_evaluation
 from src.scraper.race_card import scrape_race_card, scrape_today_races
@@ -240,6 +249,71 @@ def main():
     raw_probs = model.predict(race_feat[available_features])
     race_feat["pred_prob"] = calibrator.predict(raw_probs)
 
+    # ================================================================
+    # 穴馬ヘッドの推論 (有効化されているとき)
+    # ================================================================
+    anaba_model_path = os.path.join(model_dir, "anaba_model.txt")
+    anaba_meta_path = os.path.join(model_dir, "anaba_meta.pkl")
+    if (
+        cfg.get("anaba", {}).get("enabled", False)
+        and os.path.exists(anaba_model_path)
+        and os.path.exists(anaba_meta_path)
+    ):
+        print("Predicting anaba (穴馬) head...")
+        try:
+            anaba_model = load_anaba_model(anaba_model_path)
+            anaba_meta = load_anaba_meta(anaba_meta_path)
+            anaba_feature_columns = anaba_meta["feature_columns"]
+            use_ts_odds = anaba_meta.get("use_ts_odds", False)
+
+            anaba_race_feat = race_feat.copy()
+            if use_ts_odds:
+                ts_cfg = cfg.get("odds_timeseries", {})
+                years = sorted(set(
+                    list(cfg["data"]["train_years"])
+                    + [cfg["data"]["valid_year"]]
+                    + list(cfg["data"].get("test_years") or [])
+                ))
+                # 当日レースは Time_Series_Odds に未収録の可能性が高い → has_ts_odds=0 でフォールバック
+                if "race_id" in race_feat.columns and len(race_feat) > 0:
+                    try:
+                        ts_features = load_ts_odds_features(
+                            ts_odds_dir=ts_cfg["dir"],
+                            years=years,
+                            cache_dir=ts_cfg.get("cache_dir"),
+                            verbose=False,
+                        )
+                    except Exception as e:
+                        print(f"  TS odds load failed: {e}; falling back to zero-filled TS features.")
+                        ts_features = pd.DataFrame()
+                else:
+                    ts_features = pd.DataFrame()
+                anaba_race_feat = merge_ts_odds_features(anaba_race_feat, ts_features)
+            else:
+                for col in TS_ODDS_FEATURE_COLUMNS:
+                    if col not in anaba_race_feat.columns:
+                        anaba_race_feat[col] = 0.0
+                if "has_ts_odds" not in anaba_race_feat.columns:
+                    anaba_race_feat["has_ts_odds"] = 0
+
+            # EXTRA_ANABA_BASE_COLUMNS (pop, win_odds) を確保
+            for col in EXTRA_ANABA_BASE_COLUMNS:
+                if col not in anaba_race_feat.columns:
+                    anaba_race_feat[col] = 0.0
+                else:
+                    anaba_race_feat[col] = pd.to_numeric(anaba_race_feat[col], errors="coerce").fillna(0.0)
+            # 欠損特徴量を 0 で埋める (学習時に存在しなかった場合のフェイルセーフ)
+            for col in anaba_feature_columns:
+                if col not in anaba_race_feat.columns:
+                    anaba_race_feat[col] = 0.0
+            anaba_x = anaba_race_feat[anaba_feature_columns]
+            race_feat["anaba_prob"] = anaba_model.predict(anaba_x)
+        except Exception as e:
+            print(f"  WARNING: anaba prediction failed ({e}); skipping.")
+            race_feat["anaba_prob"] = 0.0
+    else:
+        race_feat["anaba_prob"] = 0.0
+
     # 確率アンサンブル（コールドスタート対策）
     if _HAS_ENSEMBLE:
         race_key = ["year", "month", "day", "place", "race_num"]
@@ -310,6 +384,7 @@ def main():
         print(f"\nNo bets recommended ({method_label}).")
     else:
         bankroll_val = args.bankroll or strat["initial_bankroll"]
+        per_race_cap = float(strat.get("per_race_cap", 10_000))
 
         if bet_sizing == "tier":
             bet_df["bet_amount"] = bet_df["pred_prob"].apply(
@@ -318,24 +393,28 @@ def main():
                     tier_low_threshold=strat.get("tier_low_threshold", 0.3),
                     tier_mid_threshold=strat.get("tier_mid_threshold", 0.4),
                     tier_high_threshold=strat.get("tier_high_threshold", 0.5),
-                    tier_low_amount=strat.get("tier_low_amount", 100),
-                    tier_mid_amount=strat.get("tier_mid_amount", 300),
-                    tier_high_amount=strat.get("tier_high_amount", 500),
+                    tier_low_amount=strat.get("tier_low_amount", 200),
+                    tier_mid_amount=strat.get("tier_mid_amount", 500),
+                    tier_high_amount=strat.get("tier_high_amount", 1500),
                 ),
             )
         else:
-            # 従来のケリー基準による賭け金決定
+            # ケリー基準 + per_race_cap (オッズが無ければ確率按分にフォールバック)
             if "win_odds" in bet_df.columns:
                 bet_df["show_odds_est"] = bet_df["win_odds"] / 3.0
+                odds_vals = bet_df["show_odds_est"].tolist()
             else:
                 bet_df["show_odds_est"] = float("nan")
-            bet_df["bet_amount"] = bet_df.apply(
-                lambda r: compute_bet_amount(
-                    r["pred_prob"], r["show_odds_est"], bankroll_val,
-                    fraction=strat["kelly_fraction"],
-                    max_bet_fraction=strat["max_bet_fraction"],
-                    min_bet=strat["min_bet"],
-                ) if pd.notna(r["show_odds_est"]) else 0, axis=1,
+                odds_vals = None
+            bet_df["bet_amount"] = size_bets_per_race(
+                probs=bet_df["pred_prob"].tolist(),
+                odds=odds_vals,
+                bankroll=bankroll_val,
+                per_race_cap=per_race_cap,
+                fraction=strat.get("kelly_fraction", 0.25),
+                max_bet_fraction=strat.get("max_bet_fraction", 0.05),
+                min_bet=strat.get("min_bet", 100),
+                min_prob=strat.get("prob_threshold", 0.30),
             )
 
         # オッズが取得できていれば期待値を計算
@@ -344,18 +423,27 @@ def main():
             bet_df["expected_value"] = (bet_df["pred_prob"] * bet_df["show_odds_est"]).round(2)
 
         display_cols = ["place", "race_num", "horse", "horse_num", "pred_prob",
-                        "win_odds", "expected_value", "jockey_lcb95", "sire_lcb95"]
-        if args.bankroll or bet_sizing == "tier":
-            display_cols.append("bet_amount")
+                        "win_odds", "expected_value", "jockey_lcb95", "sire_lcb95",
+                        "bet_amount"]
         display_cols = [c for c in display_cols if c in bet_df.columns]
 
         print("\n" + "=" * 80)
-        print(f"RECOMMENDED HORSES ({method_label})")
+        print(f"RECOMMENDED HORSES ({method_label} / sizing={bet_sizing})")
         print("=" * 80)
         print(bet_df[display_cols].to_string(index=False))
-        print(f"\nRecommended: {len(bet_df)} horses")
-        if "bet_amount" in bet_df.columns:
-            print(f"Total bet amount: {bet_df['bet_amount'].sum():,.0f} pts")
+        total_bet = float(bet_df["bet_amount"].sum()) if "bet_amount" in bet_df.columns else 0.0
+        n_betting = int((bet_df["bet_amount"] > 0).sum()) if "bet_amount" in bet_df.columns else 0
+        print(f"\n選定: {len(bet_df)} 頭 / 実際に賭ける: {n_betting} 頭")
+        print(f"  バンクロール:        {bankroll_val:>10,.0f} 円")
+        print(f"  1レース予算上限:     {per_race_cap:>10,.0f} 円")
+        print(f"  この推奨の合計:      {total_bet:>10,.0f} 円 ({total_bet/max(bankroll_val,1):.2%} of bankroll)")
+        if bet_sizing == "kelly" and total_bet == 0.0 and n_betting == 0:
+            print("  → Kelly判定: 推定 EV < 1.0 → 賭けない方が良い (この方式では掛金0)。")
+            print("    『複勝推奨 (Show)』『単勝推奨 (Win)』のティア方式の額も参考にしてください。")
+        elif "expected_value" in bet_df.columns and not bet_df["expected_value"].isna().all() and total_bet > 0:
+            roi = (bet_df["bet_amount"] * bet_df["expected_value"]).sum() - total_bet
+            sign = "+" if roi >= 0 else ""
+            print(f"  期待損益 (Σ bet·EV − Σ bet): {sign}{roi:>10,.0f} 円")
 
     # ================================================================
     # 複数券種のまとめて推奨
@@ -365,6 +453,15 @@ def main():
     print("  ALL TICKET RECOMMENDATIONS")
     print("=" * 60)
 
+    # tier amounts (円) を recommender 側に明示的に渡す
+    common_tier_kwargs = {
+        "tier_low_threshold": strat.get("tier_low_threshold", 0.3),
+        "tier_mid_threshold": strat.get("tier_mid_threshold", 0.4),
+        "tier_high_threshold": strat.get("tier_high_threshold", 0.5),
+        "tier_low_amount": strat.get("tier_low_amount", 200),
+        "tier_mid_amount": strat.get("tier_mid_amount", 500),
+        "tier_high_amount": strat.get("tier_high_amount", 1500),
+    }
     try:
         recs = generate_full_recommendation(
             race_feat,
@@ -375,9 +472,10 @@ def main():
             trio_odds_df=trio_odds_df,
             trifecta_odds_df=trifecta_odds_df,
             method=selection_method,
+            prob_threshold=strat.get("prob_threshold", 0.3),
+            **common_tier_kwargs,
         )
     except TypeError:
-        # recommender.pyが method 引数に未対応の場合のフォールバック
         recs = generate_full_recommendation(
             race_feat,
             min_ev=strat.get("show_min_ev", 1.0),
@@ -386,6 +484,7 @@ def main():
             top_n=strat.get("trio_top_n", 5),
             trio_odds_df=trio_odds_df,
             trifecta_odds_df=trifecta_odds_df,
+            **common_tier_kwargs,
         )
 
     # --- 複勝 ---
@@ -394,11 +493,93 @@ def main():
     # --- 単勝 ---
     _print_win_recs(recs["win"], race_feat, strat)
 
+    # --- 穴馬候補 ---
+    _print_anaba_recs(race_feat, cfg)
+
     # --- 三連複 ---
     _print_trio_recs(recs["trio"], strat)
 
     # --- 三連単 ---
     _print_trifecta_recs(recs["trifecta"], strat)
+
+
+def _print_anaba_recs(race_feat: pd.DataFrame, cfg: dict) -> None:
+    """穴馬ヘッドの推奨を表示する。"""
+    anaba_cfg = cfg.get("anaba", {})
+    if not anaba_cfg.get("enabled", False):
+        return
+    if "anaba_prob" not in race_feat.columns or float(race_feat["anaba_prob"].max() or 0) <= 0:
+        return
+
+    threshold = float(anaba_cfg.get("score_threshold", 0.15))
+    min_pop = int(anaba_cfg.get("min_pop", 5))
+
+    print("\n" + "=" * 50)
+    print(f"  穴馬候補 (Anaba: ≥{min_pop}番人気で1着想定 / score≥{threshold:.2f})")
+    print("=" * 50)
+
+    df = race_feat.copy()
+    df["anaba_prob"] = pd.to_numeric(df["anaba_prob"], errors="coerce").fillna(0.0)
+
+    grouped_keys = [k for k in ["year", "month", "day", "place", "race_num"] if k in df.columns]
+    if grouped_keys:
+        groups = df.groupby(grouped_keys, sort=False)
+    else:
+        groups = [(None, df)]
+
+    any_printed = False
+    for key, grp in groups:
+        # 人気上位 (max_pop未満) は穴馬定義から外す → スクリーニング
+        if "pop" in grp.columns:
+            pop_ser = pd.to_numeric(grp["pop"], errors="coerce").fillna(0).astype(int)
+            grp = grp[pop_ser >= 0]  # pop>=min_pop は推奨優先のための情報 (除外はしない)
+
+        candidates = grp[grp["anaba_prob"] >= threshold].sort_values("anaba_prob", ascending=False)
+        if candidates.empty:
+            top1 = grp.sort_values("anaba_prob", ascending=False).head(1)
+            if not top1.empty:
+                label = "参考: 該当馬なし、最高 anaba_score:"
+                for _, row in top1.iterrows():
+                    _print_anaba_row(row, label_prefix="  ")
+                any_printed = True
+            continue
+        if isinstance(key, tuple):
+            head = f"  Race {'-'.join(str(k) for k in key)}"
+        elif key is not None:
+            head = f"  Race {key}"
+        else:
+            head = "  Race"
+        if grouped_keys:
+            print(head)
+        for _, row in candidates.head(5).iterrows():
+            _print_anaba_row(row, label_prefix="    ")
+            any_printed = True
+
+    if not any_printed:
+        print("  該当馬なし")
+
+
+def _print_anaba_row(row: pd.Series, label_prefix: str = "  ") -> None:
+    name = row.get("horse", "")
+    horse_num = int(row.get("horse_num", 0))
+    pop = row.get("pop", "")
+    pop_str = f"{int(pop)}人気" if pop not in (None, "", "nan") and pd.notna(pop) else "---"
+    win_odds = row.get("win_odds", 0)
+    win_str = f"{float(win_odds):.1f}" if pd.notna(win_odds) and float(win_odds) > 0 else "---"
+    score = float(row.get("anaba_prob", 0.0))
+    main_p = float(row.get("pred_prob", 0.0))
+    drop = row.get("ts_win_drop_pct")
+    drop_str = f"{float(drop):+.2f}" if drop is not None and pd.notna(drop) else "---"
+    late = row.get("ts_win_late_drop_pct")
+    late_str = f"{float(late):+.2f}" if late is not None and pd.notna(late) else "---"
+    print(
+        f"{label_prefix}{horse_num:>2}番 {name:<10s}  "
+        f"穴馬score {score:.3f}  "
+        f"複勝予測 {main_p:.1%}  "
+        f"単勝オッズ {win_str:>6s}  "
+        f"{pop_str:>4s}  "
+        f"オッズ低下率 {drop_str:>6s}/直前 {late_str:>6s}"
+    )
 
 
 def _print_show_recs(show_df: pd.DataFrame, strat: dict) -> None:
@@ -413,12 +594,16 @@ def _print_show_recs(show_df: pd.DataFrame, strat: dict) -> None:
         name = row.get("horse", "")
         odds_str = f"{row['show_odds_avg']:.1f}" if pd.notna(row.get("show_odds_avg")) else "---"
         ev_str = f"{row['ev']:.2f}" if pd.notna(row.get("ev")) else "---"
-        bet_str = f"{row['bet_amount']:,.0f}pts" if row.get("bet_amount", 0) > 0 else "---"
+        bet_str = f"{row['bet_amount']:,.0f}円" if row.get("bet_amount", 0) > 0 else "---"
         print(f"  {int(row['horse_num']):>2}番 {name:<10s}  "
               f"予測複勝率 {row['pred_prob']:.1%}  "
               f"オッズ(平均) {odds_str:>6s}  "
               f"EV {ev_str:>6s}  "
               f"推奨額 {bet_str:>10s}")
+    if "bet_amount" in show_df.columns:
+        sub = float(show_df["bet_amount"].fillna(0).sum())
+        if sub > 0:
+            print(f"  ─ 複勝 小計: {sub:,.0f} 円 ({len(show_df)}頭)")
 
 
 def _print_win_recs(win_df: pd.DataFrame, race_feat: pd.DataFrame, strat: dict) -> None:
@@ -442,12 +627,16 @@ def _print_win_recs(win_df: pd.DataFrame, race_feat: pd.DataFrame, strat: dict) 
     for _, row in win_df.iterrows():
         name = row.get("horse", "")
         ev_str = f"{row['ev']:.2f}" if pd.notna(row.get("ev")) else "---"
-        bet_str = f"{row['bet_amount']:,.0f}pts" if row.get("bet_amount", 0) > 0 else "---"
+        bet_str = f"{row['bet_amount']:,.0f}円" if row.get("bet_amount", 0) > 0 else "---"
         print(f"  {int(row['horse_num']):>2}番 {name:<10s}  "
               f"予測勝率 {row['win_prob']:.1%}  "
               f"オッズ {row['win_odds']:.1f}  "
               f"EV {ev_str:>6s}  "
               f"推奨額 {bet_str:>10s}")
+    if "bet_amount" in win_df.columns:
+        sub = float(win_df["bet_amount"].fillna(0).sum())
+        if sub > 0:
+            print(f"  ─ 単勝 小計: {sub:,.0f} 円 ({len(win_df)}頭)")
 
 
 def _print_trio_recs(trio_df: pd.DataFrame, strat: dict) -> None:

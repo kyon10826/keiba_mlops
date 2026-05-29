@@ -1,9 +1,16 @@
 # Data
 data/*.csv
 data/*.xlsx
+src/data/data/
+src/data/Time_Series_Odds/
 
 # Models
 models/
+models_smoke/
+models_newfeat/
+
+# Cache (TS odds parquet etc.)
+cache/
 
 # Python
 __pycache__/

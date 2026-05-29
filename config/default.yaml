@@ -8,6 +8,24 @@ data:
   train_file_pattern: "record_data_{year}.csv"
   test_file_pattern: "record_data_{year}_*.csv"
 
+# 時系列オッズ (JD CSV) の取り込み設定。
+# 既存の複勝モデル(基礎能力ベース)は影響を受けない。穴馬ヘッドのみが利用する。
+odds_timeseries:
+  enabled: true                                  # false で完全無効化 (穴馬ヘッドも基礎能力のみで学習)
+  dir: "./src/data/Time_Series_Odds"             # JD CSV が並ぶディレクトリ
+  encoding: "shift_jis"
+  cache_dir: "./cache/ts_odds"                   # 年単位 parquet キャッシュ
+  # 取り込み対象年: 未指定なら train_years + valid_year + test_years を自動使用
+
+# 穴馬モデル (rank==1 AND pop>=min_pop) の設定
+anaba:
+  enabled: true                                  # false で穴馬ヘッドの学習・推論をスキップ
+  min_pop: 5                                     # 5番人気以下で1着 → 穴馬
+  use_ts_odds: true                              # 時系列オッズ特徴量を使うか
+  optuna_n_trials: 15
+  optuna_timeout: 900
+  score_threshold: 0.15                          # 推奨時に穴馬候補と見なす確率しきい値
+
 model:
   dir: "./models"
   type: "lightgbm"
@@ -44,20 +62,22 @@ bayesian:
 strategy:
   min_expected_value: 1.0
   top_n_popularity: 3
-  kelly_fraction: 0.25  # quarter Kelly
-  max_bet_fraction: 0.05  # max 5% of bankroll
-  min_bet: 100
-  initial_bankroll: 1000000
-  pre_race_seconds: 250  # 4min 10sec before race
-  show_min_ev: 1.0          # 複勝のEV閾値
-  win_min_ev: 1.2           # 単勝のEV閾値（複勝より高め）
-  trio_top_n: 5             # 三連複の候補馬数
-  trio_max_display: 5       # 三連複の表示件数
-  trifecta_top_n: 5         # 三連単の候補馬数
-  trifecta_max_display: 10  # 三連単の表示件数
+  # ----- 実額(円)ベースの資金管理 -----
+  initial_bankroll: 1000000      # 全体バンクロール (円)。--bankroll で上書き可
+  per_race_cap: 10000            # 1レースに賭ける合計上限 (円)
+  kelly_fraction: 0.25           # quarter Kelly。1.0 でフルケリー
+  max_bet_fraction: 0.05         # 1ベットあたりバンクロールの最大比率 (5%)
+  min_bet: 100                   # JRA 最低購入単位 (円)
+  pre_race_seconds: 250          # 4min 10sec before race
+  show_min_ev: 1.0               # 複勝のEV閾値
+  win_min_ev: 1.2                # 単勝のEV閾値（複勝より高め）
+  trio_top_n: 5                  # 三連複の候補馬数
+  trio_max_display: 5            # 三連複の表示件数
+  trifecta_top_n: 5              # 三連単の候補馬数
+  trifecta_max_display: 10       # 三連単の表示件数
 
   # 方式の設定
-  selection_method: "threshold"  # "threshold"  or "ev" 
+  selection_method: "threshold"  # "threshold"  or "ev"
   prob_threshold: 0.3            # 購入判定の最低予測確率
   max_popularity: 3              # 人気上位N頭から選定
 
@@ -85,14 +105,17 @@ strategy:
       top_jockey_bonus: 0.03
     popular_jockey_ids: [1088, 5339]  # 川田, ルメール
 
-  # ポイント分配方式
-  bet_sizing: "tier"             # "tier"  or "kelly" 
+  # 賭け金サイジング方式
+  # "kelly" (オッズ有): 真ケリー (max_bet_fraction と per_race_cap でクランプ)
+  #         (オッズ無): 確率重み付き擬似ケリー (per_race_cap 内で按分)
+  # "tier"  : pred_prob のティアで固定額 (円)。バンクロール非依存
+  bet_sizing: "kelly"
   tier_low_threshold: 0.3        # Buy Low の境界
   tier_mid_threshold: 0.4        # Buy の境界
   tier_high_threshold: 0.5       # Buy Aggressive の境界
-  tier_low_amount: 100           # Buy Low の額
-  tier_mid_amount: 300           # Buy の額
-  tier_high_amount: 500          # Buy Aggressive の額
+  tier_low_amount: 200           # Buy Low の額 (円)
+  tier_mid_amount: 500           # Buy の額 (円)
+  tier_high_amount: 1500         # Buy Aggressive の額 (円)
 
 scraper:
   base_url: "https://db.netkeiba.com"
