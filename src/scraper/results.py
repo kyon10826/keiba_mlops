@@ -45,6 +45,21 @@ NAR_PLACE_CODE_LIST = [
 ALL_PLACE_CODE_LIST = PLACE_CODE_LIST + NAR_PLACE_CODE_LIST
 
 
+_CHARSET_META_RE = re.compile(rb'<meta[^>]*charset=["\']?([A-Za-z0-9_\-]+)', re.IGNORECASE)
+
+
+def _detect_encoding(resp: requests.Response, fallback: str = "utf-8") -> str:
+    """HTML meta charset → apparent_encoding → fallback の順で判定する。"""
+    head = resp.content[:4096]
+    m = _CHARSET_META_RE.search(head)
+    if m:
+        try:
+            return m.group(1).decode("ascii", errors="ignore").strip()
+        except Exception:
+            pass
+    return resp.apparent_encoding or fallback
+
+
 def _request_with_retry(
     url: str,
     max_retries: int = 3,
@@ -72,7 +87,7 @@ def _request_with_retry(
     for attempt in range(max_retries):
         try:
             resp = requests.get(url, timeout=timeout, headers=headers)
-            resp.encoding = "EUC-JP"
+            resp.encoding = _detect_encoding(resp)
             if resp.status_code == 200:
                 return resp
             logger.warning(

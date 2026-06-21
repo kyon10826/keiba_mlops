@@ -32,24 +32,32 @@ ODDS_BASE = "https://race.netkeiba.com/odds"
 NAR_ODDS_BASE = "https://nar.netkeiba.com/odds"
 
 
+_CHARSET_META_RE = re.compile(rb'<meta[^>]*charset=["\']?([A-Za-z0-9_\-]+)', re.IGNORECASE)
+
+
+def _detect_encoding(resp: requests.Response, fallback: str = "utf-8") -> str:
+    """HTML meta charset → apparent_encoding → fallback の順で判定する。"""
+    head = resp.content[:4096]
+    m = _CHARSET_META_RE.search(head)
+    if m:
+        try:
+            return m.group(1).decode("ascii", errors="ignore").strip()
+        except Exception:
+            pass
+    return resp.apparent_encoding or fallback
+
+
 def _request_with_retry(
     url: str,
     max_retries: int = 3,
     timeout: int = 30,
     interval: float = 1.5,
-    encoding: str = "EUC-JP",
+    encoding: str | None = None,
 ) -> requests.Response | None:
     """リトライ機能付きでGETリクエストを送信する。
 
-    Args:
-        url: 対象のURL。
-        max_retries: 最大リトライ回数。
-        timeout: リクエストのタイムアウト秒数。
-        interval: リトライ間のスリープ間隔。
-        encoding: レスポンスのエンコーディング。
-
-    Returns:
-        レスポンスオブジェクト。失敗時はNone。
+    encoding=None なら HTML meta charset + chardet で自動判定する。
+    JSON エンドポイント等で明示指定したい場合は "utf-8" などを渡す。
     """
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -59,7 +67,7 @@ def _request_with_retry(
     for attempt in range(max_retries):
         try:
             resp = requests.get(url, timeout=timeout, headers=headers)
-            resp.encoding = encoding
+            resp.encoding = encoding or _detect_encoding(resp)
             if resp.status_code == 200:
                 return resp
             logger.warning(

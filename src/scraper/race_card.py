@@ -26,12 +26,31 @@ NAR_RACE_CARD_BASE = "https://nar.netkeiba.com"
 DB_BASE = "https://db.netkeiba.com"
 
 
+_CHARSET_META_RE = re.compile(rb'<meta[^>]*charset=["\']?([A-Za-z0-9_\-]+)', re.IGNORECASE)
+
+
+def _detect_encoding(resp: requests.Response, fallback: str = "utf-8") -> str:
+    """HTML meta charset → apparent_encoding (chardet) → fallback の順で判定。
+
+    netkeiba 系は 2024-2025 にかけて EUC-JP → UTF-8 へ移行している。
+    一部の旧 db.netkeiba.com ページは依然 EUC-JP の可能性があるため自動判定する。
+    """
+    head = resp.content[:4096]
+    m = _CHARSET_META_RE.search(head)
+    if m:
+        try:
+            return m.group(1).decode("ascii", errors="ignore").strip()
+        except Exception:
+            pass
+    return resp.apparent_encoding or fallback
+
+
 def _request_with_retry(
     url: str,
     max_retries: int = 3,
     timeout: int = 30,
     interval: float = 1.5,
-    encoding: str = "EUC-JP",
+    encoding: str | None = None,
 ) -> requests.Response | None:
     """リトライ機能付きでGETリクエストを送信する。
 
@@ -40,7 +59,7 @@ def _request_with_retry(
         max_retries: 最大リトライ回数。
         timeout: リクエストのタイムアウト秒数。
         interval: リトライ間のスリープ間隔。
-        encoding: レスポンスのエンコーディング。
+        encoding: レスポンスのエンコーディング。None なら meta charset + chardet で自動判定。
 
     Returns:
         レスポンスオブジェクト。失敗時はNone。
@@ -53,7 +72,7 @@ def _request_with_retry(
     for attempt in range(max_retries):
         try:
             resp = requests.get(url, timeout=timeout, headers=headers)
-            resp.encoding = encoding
+            resp.encoding = encoding or _detect_encoding(resp)
             if resp.status_code == 200:
                 return resp
             logger.warning(

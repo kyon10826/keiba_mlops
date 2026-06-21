@@ -29,45 +29,96 @@ def compute_bet_amount(
     fraction: float = 0.25,
     max_bet_fraction: float = 0.05,
     min_bet: float = 100.0,
+    per_bet_cap: float | None = None,
 ) -> float:
-    """フラクショナル・ケリー基準を用いて賭け金を計算する。
+    """フラクショナル・ケリー基準で 1 ベット分の賭け金 (円) を計算する。
 
-    Args:
-        prob: 複勝(1-3着)確率の推定値
-        odds: 複勝オッズの推定値(小数)
-        bankroll: 現在のバンクロール
-        fraction: ケリー倍率(0.25 = クォーターケリー)
-        max_bet_fraction: バンクロールに対する最大賭け金比率
-        min_bet: 最小賭け金(プラットフォームの最低額)
-
-    Returns:
-        100単位に丸めた賭け金(ポイント単位)
+    per_bet_cap 指定時、Kelly + max_bet_fraction の結果に対し min(per_bet_cap) を適用。
     """
     kf = kelly_fraction(prob, odds)
-
     if kf <= 0:
         return 0.0
 
-    # フラクショナル・ケリーを適用
     bet = bankroll * kf * fraction
+    bet = min(bet, bankroll * max_bet_fraction)
+    if per_bet_cap is not None:
+        bet = min(bet, per_bet_cap)
 
-    # バンクロールの最大比率で上限を設ける
-    max_bet = bankroll * max_bet_fraction
-    bet = min(bet, max_bet)
-
-    # 100単位に丸める
     bet = int(bet // 100) * 100
-
-    # 最小値を適用
     if bet < min_bet:
-        # ケリーが賭けると判断したが最小値未満の場合は最小値を賭ける
-        # (期待値が正の場合に限る)
         if kf > 0:
             bet = min_bet
         else:
             bet = 0.0
-
     return float(bet)
+
+
+def allocate_per_race_cap(amounts, per_race_cap, min_bet=100.0):
+    """合計が per_race_cap 以下に収まるよう比例縮小 (100 円単位)。"""
+    arr = np.asarray(amounts, dtype=float)
+    total = arr.sum()
+    if total <= per_race_cap or total <= 0:
+        return arr.tolist()
+    scale = per_race_cap / total
+    scaled = arr * scale
+    rounded = (np.floor(scaled / min_bet) * min_bet).astype(float)
+    leftover = per_race_cap - rounded.sum()
+    if leftover >= min_bet:
+        idx = int(np.argmax(arr))
+        rounded[idx] += int(leftover // min_bet) * min_bet
+    return rounded.tolist()
+
+
+def allocate_by_probability(probs, per_race_cap, min_bet=100.0, min_prob=0.30):
+    """確率 ^ 2 重みで per_race_cap を按分 (オッズなし時のフォールバック)。"""
+    arr = np.asarray(probs, dtype=float)
+    mask = arr >= min_prob
+    out = np.zeros_like(arr, dtype=float)
+    if not mask.any():
+        return out.tolist()
+    w = arr[mask] ** 2
+    w = w / w.sum()
+    raw = w * per_race_cap
+    rounded = (np.floor(raw / min_bet) * min_bet).astype(float)
+    rounded[rounded < min_bet] = 0.0
+    leftover = per_race_cap - rounded.sum()
+    if leftover >= min_bet:
+        sub_idx = int(np.argmax(arr[mask]))
+        rounded[sub_idx] += int(leftover // min_bet) * min_bet
+    out[mask] = rounded
+    return out.tolist()
+
+
+def size_bets_per_race(
+    probs, odds, bankroll, per_race_cap,
+    fraction=0.25, max_bet_fraction=0.05, min_bet=100.0, min_prob=0.30,
+):
+    """1 レース分の馬全頭への賭け金 (円) を割り当てる。
+
+    オッズ取得済み → 各馬 Kelly → 合計 per_race_cap 内に収める
+    オッズ未取得  → 確率重み付き擬似ケリー
+    """
+    p = np.asarray(probs, dtype=float)
+    if odds is None:
+        o = np.full_like(p, 0.0)
+    else:
+        o = np.asarray(odds, dtype=float)
+    assert len(p) == len(o)
+    raw = []
+    have_any_odds = False
+    for prob, oo in zip(p, o):
+        if not np.isfinite(prob) or prob <= 0 or not np.isfinite(oo) or oo <= 0:
+            raw.append(0.0)
+            continue
+        have_any_odds = True
+        raw.append(compute_bet_amount(
+            prob=float(prob), odds=float(oo), bankroll=bankroll,
+            fraction=fraction, max_bet_fraction=max_bet_fraction,
+            min_bet=min_bet, per_bet_cap=per_race_cap,
+        ))
+    if not have_any_odds:
+        return allocate_by_probability(p, per_race_cap, min_bet=min_bet, min_prob=min_prob)
+    return allocate_per_race_cap(raw, per_race_cap, min_bet=min_bet)
 
 
 def compute_bet_amounts_batch(
@@ -165,7 +216,7 @@ def compute_bet_amount_dispatch(
     elif method == "kelly":
         if odds is None or bankroll is None:
             raise ValueError("kelly method requires both odds and bankroll")
-        kelly_keys = {"fraction", "max_bet_fraction", "min_bet"}
+        kelly_keys = {"fraction", "max_bet_fraction", "min_bet", "per_bet_cap"}
         kelly_kwargs = {k: v for k, v in kwargs.items() if k in kelly_keys}
         return compute_bet_amount(prob, odds, bankroll, **kelly_kwargs)
     else:

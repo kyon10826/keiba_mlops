@@ -1,0 +1,88 @@
+data:
+  dir: "./src/data/data"
+  encoding: "shift_jis"
+  train_years: [2022, 2023]
+  valid_year: 2024
+  valid_split_month: 7
+  test_years: []
+  train_file_pattern: "record_data_{year}.csv"
+  test_file_pattern: "record_data_{year}_*.csv"
+
+odds_timeseries:
+  enabled: true
+  dir: "./src/data/Time_Series_Odds"
+  encoding: "shift_jis"
+  cache_dir: "./cache/ts_odds"
+
+anaba:
+  enabled: true
+  min_pop: 5
+  use_ts_odds: true
+  optuna_n_trials: 2
+  optuna_timeout: 120
+  score_threshold: 0.15
+
+model:
+  dir: "./models_smoke"
+  type: "lightgbm"
+  objective: "binary"
+  metric: "binary_logloss"
+  seed: 17
+  optuna:
+    n_trials: 2
+    timeout: 120
+  search_space:
+    boosting_type: ["gbdt"]
+    learning_rate: [0.05, 0.1]
+    num_leaves: [31, 63]
+    max_depth: [4, 8]
+    min_child_samples: [20, 50]
+    subsample: [0.8, 1.0]
+    colsample_bytree: [0.6, 1.0]
+    reg_alpha: [1.0e-4, 0.1]
+    reg_lambda: [1.0e-4, 0.1]
+  early_stopping_rounds: 50
+  max_iterations: 200
+  categorical_features: ["place_encoded", "track_type", "dist_category",
+                          "condition_encoded", "weather_encoded",
+                          "father_encoded", "jockey_encoded"]
+
+calibration:
+  method: "isotonic"
+  holdout_fraction: 0.5
+
+bayesian:
+  alpha_prior: 2
+  beta_prior: 5
+
+strategy:
+  min_expected_value: 1.0
+  top_n_popularity: 3
+  initial_bankroll: 1000000
+  per_race_cap: 10000
+  kelly_fraction: 0.25
+  max_bet_fraction: 0.05
+  min_bet: 100
+  pre_race_seconds: 250
+  show_min_ev: 1.0
+  win_min_ev: 1.2
+  trio_top_n: 5
+  trio_max_display: 5
+  trifecta_top_n: 5
+  trifecta_max_display: 10
+  selection_method: "threshold"
+  prob_threshold: 0.3
+  max_popularity: 3
+  bet_sizing: "kelly"
+  tier_low_threshold: 0.3
+  tier_mid_threshold: 0.4
+  tier_high_threshold: 0.5
+  tier_low_amount: 200
+  tier_mid_amount: 500
+  tier_high_amount: 1500
+
+scraper:
+  base_url: "https://db.netkeiba.com"
+  race_url: "https://race.netkeiba.com"
+  request_interval: 1.5
+  cache_dir: "./cache"
