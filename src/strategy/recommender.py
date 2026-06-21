@@ -276,6 +276,10 @@ def recommend_trio(
     trio_odds_df: pd.DataFrame | None = None,
     min_ev: float = 1.0,
     method: str = "threshold",
+    ev_filter: bool = False,
+    min_prob: float = 0.0,
+    max_odds: float | None = None,
+    takeout_rate: float = 0.0,
 ) -> pd.DataFrame:
     """Harvilleモデルを用いて三連複を推奨する。
 
@@ -345,9 +349,19 @@ def recommend_trio(
             has_odds = trio_df["odds"].notna()
             trio_df = trio_df[~has_odds | (trio_df["ev"] >= min_ev)]
 
-    result = trio_df[out_cols].sort_values(
-        "trio_prob", ascending=False,
-    ).reset_index(drop=True)
+    # 品質ガード: 低確率/高オッズ/控除考慮 EV
+    if ev_filter:
+        if min_prob > 0 and "trio_prob" in trio_df.columns:
+            trio_df = trio_df[trio_df["trio_prob"].fillna(0) >= min_prob]
+        if max_odds is not None and "odds" in trio_df.columns:
+            trio_df = trio_df[trio_df["odds"].fillna(0) <= max_odds]
+        if "ev" in trio_df.columns:
+            adj_ev = trio_df["ev"].fillna(0) * (1.0 - takeout_rate)
+            trio_df = trio_df[adj_ev >= min_ev]
+
+    # ev_filter モードなら EV 降順、それ以外は trio_prob 降順
+    sort_col = "ev" if (ev_filter and "ev" in trio_df.columns) else "trio_prob"
+    result = trio_df[out_cols].sort_values(sort_col, ascending=False).reset_index(drop=True)
     return result
 
 
@@ -357,6 +371,10 @@ def recommend_trifecta(
     trifecta_odds_df: pd.DataFrame | None = None,
     min_ev: float = 1.0,
     method: str = "threshold",
+    ev_filter: bool = False,
+    min_prob: float = 0.0,
+    max_odds: float | None = None,
+    takeout_rate: float = 0.0,
 ) -> pd.DataFrame:
     """Harvilleモデルを用いて三連単を推奨する。
 
@@ -425,9 +443,18 @@ def recommend_trifecta(
             has_odds = trifecta_df["odds"].notna()
             trifecta_df = trifecta_df[~has_odds | (trifecta_df["ev"] >= min_ev)]
 
-    result = trifecta_df[out_cols].sort_values(
-        "harville_prob", ascending=False,
-    ).reset_index(drop=True)
+    # 品質ガード: 低確率/高オッズ/控除考慮 EV
+    if ev_filter:
+        if min_prob > 0 and "harville_prob" in trifecta_df.columns:
+            trifecta_df = trifecta_df[trifecta_df["harville_prob"].fillna(0) >= min_prob]
+        if max_odds is not None and "odds" in trifecta_df.columns:
+            trifecta_df = trifecta_df[trifecta_df["odds"].fillna(0) <= max_odds]
+        if "ev" in trifecta_df.columns:
+            adj_ev = trifecta_df["ev"].fillna(0) * (1.0 - takeout_rate)
+            trifecta_df = trifecta_df[adj_ev >= min_ev]
+
+    sort_col = "ev" if (ev_filter and "ev" in trifecta_df.columns) else "harville_prob"
+    result = trifecta_df[out_cols].sort_values(sort_col, ascending=False).reset_index(drop=True)
     return result
 
 
@@ -441,6 +468,13 @@ def generate_full_recommendation(
     trifecta_odds_df: pd.DataFrame | None = None,
     method: str = "threshold",
     prob_threshold: float = 0.3,
+    ev_filter: bool = False,
+    min_prob_trio: float = 0.0,
+    min_prob_trifecta: float = 0.0,
+    max_odds_trio: float | None = None,
+    max_odds_trifecta: float | None = None,
+    takeout_trio: float = 0.0,
+    takeout_trifecta: float = 0.0,
     **tier_kwargs,
 ) -> dict[str, pd.DataFrame]:
     """全ての馬券種について推奨を生成する。
@@ -479,13 +513,26 @@ def generate_full_recommendation(
     # 三連複の推奨
     result["trio"] = recommend_trio(
         race_feat, top_n=top_n, trio_odds_df=trio_odds_df, min_ev=min_ev,
-        method=method,
+        method=method, ev_filter=ev_filter,
+        min_prob=min_prob_trio, max_odds=max_odds_trio, takeout_rate=takeout_trio,
     )
 
     # 三連単の推奨
     result["trifecta"] = recommend_trifecta(
         race_feat, top_n=top_n, trifecta_odds_df=trifecta_odds_df, min_ev=min_ev,
-        method=method,
+        method=method, ev_filter=ev_filter,
+        min_prob=min_prob_trifecta, max_odds=max_odds_trifecta, takeout_rate=takeout_trifecta,
     )
+
+    # ev_filter モードなら単勝・複勝にも EV>=min_ev フィルタを後付け
+    if ev_filter:
+        if "ev" in result["show"].columns:
+            result["show"] = result["show"][result["show"]["ev"].fillna(0) >= min_ev].sort_values(
+                "ev", ascending=False,
+            ).reset_index(drop=True)
+        if "ev" in result["win"].columns:
+            result["win"] = result["win"][result["win"]["ev"].fillna(0) >= min_ev].sort_values(
+                "ev", ascending=False,
+            ).reset_index(drop=True)
 
     return result
