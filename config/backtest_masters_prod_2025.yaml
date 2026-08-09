@@ -1,0 +1,47 @@
+# 本番モデル (models_masters) のバックテスト: 2025 年の前年大会実期間窓
+# (2025 大会 = 8/30〜9/21。スナップショット record_data_2025_20250919.csv に含まれる範囲で評価)
+data:
+  dir: "./src/data/data"
+  encoding: "shift_jis"
+  train_years: [1995, 1996, 1997, 1998, 1999,
+                2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009,
+                2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019,
+                2020, 2021, 2022, 2023]
+  valid_year: 2024
+  valid_split_month: 7
+  test_years: [2025]
+  train_file_pattern: "record_data_{year}.csv"
+  test_file_pattern: "record_data_{year}_*.csv"
+
+model:
+  dir: "./models_masters"
+
+backtest:
+  start_date: "2025-08-30"
+  end_date: "2025-09-21"
+
+masters_rules:
+  initial_bankroll: 1000000
+  min_races_bet: 96
+  min_total_wagered: 500000
+  min_bet_unit: 100
+
+strategy:
+  bet_type: "win"
+  win_prob_min: 0.10
+  win_bet_amount: 3000
+  select_top_n_per_race: 1
+  min_ev: 1.05
+  min_odds: 5.0
+  max_odds: 15.0
+  prob_scaling: 1.0
+  sizing_method: "flat"
+  kelly_fraction: 0.10
+  max_bet_fraction: 0.02
+  per_race_cap: 5000
+  hybrid_enabled: true
+  sub_bet_amount: 2000
+
+bayesian:
+  alpha_prior: 2
+  beta_prior: 5

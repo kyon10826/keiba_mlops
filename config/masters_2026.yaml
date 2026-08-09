@@ -1,0 +1,123 @@
+# AI 競馬予想マスターズ 2026 本番学習設定 (Phase 6)
+# - train: 1995-2023 (29 年 ~1.4M 行)。1980 年代は血統・競走体系の乖離が大きく除外
+# - valid: 2024 年 1-6 月 (Optuna の評価 + キャリブレーション)
+# - test:  2024 年 7-12 月 + 2025 年スナップショット (前年大会期間を含む)
+# - Optuna 20 trials (複勝 / 単勝それぞれ)
+data:
+  dir: "./src/data/data"
+  encoding: "shift_jis"
+  train_years: [1995, 1996, 1997, 1998, 1999,
+                2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009,
+                2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019,
+                2020, 2021, 2022, 2023]
+  valid_year: 2024
+  valid_split_month: 7
+  test_years: [2025]
+  train_file_pattern: "record_data_{year}.csv"
+  test_file_pattern: "record_data_{year}_*.csv"   # 最新スナップショットを自動選択
+
+# 時系列オッズはモデル入力に使わない (AI 競馬予想マスターズ方針)
+odds_timeseries:
+  enabled: false
+
+# 単勝予測ヘッド (オッズなし。比較用ベースラインとして温存)
+win:
+  enabled: true
+  optuna_n_trials: 20
+  optuna_timeout: 3600
+
+# 市場残差ヘッド (実マネー運用の本命。オッズ特徴量 3 列を追加した単勝モデル)
+# 成否判定: 校正後 Brier が market_prob 単体の Brier を下回ること
+# use_scale_pos_weight=false: 市場確率が主特徴量のモデルでは確率スケールを
+# 歪ませない方が残差エッジを保てる (spw あり版は 0.05811 vs 市場 0.05771 で惜敗)
+market:
+  enabled: true
+  use_scale_pos_weight: false
+  optuna_n_trials: 20
+  optuna_timeout: 3600
+
+model:
+  dir: "./models_masters"
+  type: "lightgbm"
+  objective: "binary"
+  metric: "binary_logloss"
+  seed: 17
+  optuna:
+    n_trials: 20
+    timeout: 3600
+  search_space:
+    boosting_type: ["gbdt"]          # dart は倍以上遅く smoke でも勝たなかったので除外
+    learning_rate: [0.01, 0.1]
+    num_leaves: [20, 200]
+    max_depth: [4, 12]
+    min_child_samples: [10, 100]
+    subsample: [0.6, 1.0]
+    colsample_bytree: [0.4, 1.0]
+    reg_alpha: [1.0e-6, 1.0]
+    reg_lambda: [1.0e-6, 1.0]
+  early_stopping_rounds: 100
+  max_iterations: 1000
+  categorical_features: ["place_encoded", "track_type", "dist_category",
+                          "condition_encoded", "weather_encoded",
+                          "father_encoded", "jockey_encoded"]
+
+calibration:
+  method: "isotonic"
+  holdout_fraction: 0.5
+
+bayesian:
+  alpha_prior: 2
+  beta_prior: 5
+
+strategy:
+  min_expected_value: 1.0
+  top_n_popularity: 3
+  initial_bankroll: 1000000
+  per_race_cap: 10000
+  kelly_fraction: 0.25
+  max_bet_fraction: 0.05
+  min_bet: 100
+  pre_race_seconds: 250
+  show_min_ev: 1.0
+  win_min_ev: 1.2
+  trio_top_n: 5
+  trio_max_display: 5
+  trifecta_top_n: 5
+  trifecta_max_display: 10
+  selection_method: "threshold"
+  prob_threshold: 0.3
+  max_popularity: 3
+  bet_sizing: "kelly"
+  tier_low_threshold: 0.3
+  tier_mid_threshold: 0.4
+  tier_high_threshold: 0.5
+  tier_low_amount: 200
+  tier_mid_amount: 500
+  tier_high_amount: 1500
+
+# 当日実行 (scripts/run_live.py) の投票戦略パラメータ
+# 戦略検証の経緯 (バックテスト、行順バグ修正後の正データにて):
+#   - EV フィルタ main ベット: 384 設定のグリッドサーチで、2024/2025 どちらの窓でも
+#     ベースラインを上回る設定なし → オッズなしモデルが市場と乖離した時は市場が正しい (逆選択)
+#   - モデル top-1 の全オッズ帯でプラス ROI なし。最も損失が小さいのは
+#     オッズ 1.0-1.5 の圧倒的人気帯 (-13.6%、n=146、的中率 68.5%)
+#   → 「最低額で制約をクリアし、強制される 50 万 pt は最小損失帯に置く」戦略を採用
+live:
+  mode: "favorite_concentration"
+  min_bet_per_race: 100        # 全レース top-1 への最低額 (96 レース制約を最安でクリア)
+  fav_max_odds: 1.5            # 大口対象: top-1 の 5 分前オッズがこの値以下
+  fav_fallback_odds: 2.5       # 終盤に累計が不足する場合の拡張帯 (手動切替用)
+  target_total_wagered: 510000 # 期間累計の目標投票額 (50 万制約 + 2% バッファ)
+  big_amount_min: 5000
+  big_amount_max: 60000
+  races_per_day_est: 36
+  fav_rate_est: 0.06           # top-1 がオッズ≤1.5 になる割合 (実測 ~6%)
+  min_bet_unit: 100
+  odds_fetch_before_sec: 250   # 発走 4分10秒前にオッズ取得 (サーバは 4分30秒前に更新)
+  bet_deadline_sec: 180        # 投票締切は発走 3 分前
+
+scraper:
+  base_url: "https://db.netkeiba.com"
+  race_url: "https://race.netkeiba.com"
+  request_interval: 1.5
+  cache_dir: "./cache"

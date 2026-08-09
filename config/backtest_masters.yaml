@@ -1,0 +1,71 @@
+# AI 競馬予想マスターズ 2026 バックテスト設定
+# - Phase 1 モデルで 2024年 8/29〜9/21 の同期間をシミュレート
+# - 実際のコンペ制約 (96レース×50万pt) を評価
+data:
+  dir: "./src/data/data"
+  encoding: "shift_jis"
+  train_years: [2022, 2023]
+  valid_year: 2024
+  valid_split_month: 7
+  test_years: []
+  train_file_pattern: "record_data_{year}.csv"
+
+# 学習済み Phase 1 モデルを利用
+model:
+  dir: "./models_masters_smoke"
+
+# バックテスト対象期間 (2024年の同期間)
+backtest:
+  start_date: "2024-08-24"   # 8/24-25 の週から (実 2026 コンペは 8/29-)
+  end_date: "2024-09-22"     # 9/22 まで (実 2026 コンペは 9/21)
+
+# コンペルール
+masters_rules:
+  initial_bankroll: 1000000     # 100 万pt
+  min_races_bet: 96             # 最低 96 レース投票
+  min_total_wagered: 500000     # 累計最低 50 万pt 投票
+  min_bet_unit: 100             # JRA 最低単位 (100 円 = 100pt)
+
+# 投票戦略 (Phase 4: EV フィルタ + Kelly サイジング)
+# 注意: 単勝モデルはキャリブレーション未実施のため、生確率が 0.07〜0.14 に圧縮されている。
+#       prob_scaling で実的中率レンジに補正して Kelly を計算する。
+strategy:
+  bet_type: "win"               # "win" / "trio_hybrid" (Phase 4b)
+  win_prob_min: 0.10            # 生確率のフロア (これ未満は投票検討しない)
+  win_bet_amount: 3000          # sizing_method=flat の時の固定額
+  select_top_n_per_race: 1      # 各レースで最大 N 頭に投票
+
+  # EV フィルタ (数値アーティファクトと控除率負けを回避)
+  min_ev: 1.05                  # 校正後 pred_prob × win_odds >= この値で投票
+                                # (JRA 控除率 20% だが Bankroll 消化のため緩めに)
+  min_odds: 5.0                 # 単勝オッズがこの値未満なら投票しない (中人気帯以上)
+  max_odds: 15.0                # 単勝オッズがこの値超過なら投票しない (中穴帯まで)
+
+  # 生確率の校正倍率 (実測ベース: 1.0 で校正しない)
+  prob_scaling: 1.0
+
+  # サイジング方式 (Phase 4: EV フィルタ + フラット投票の組み合わせ)
+  # Kelly は過剰にリスクを取るため、まずフラット投票で EV フィルタの効果を測定
+  sizing_method: "flat"         # "flat" / "kelly"
+  kelly_fraction: 0.10
+  max_bet_fraction: 0.02
+  per_race_cap: 5000
+
+  # === Phase 4b: ハイブリッド戦略 ===
+  # メインベット (EV通過馬)   → win_bet_amount で投票 (利益源)
+  # サブベット (通過ゼロの他レース) → sub_bet_amount で 1 頭に投票 (制約充足)
+  # 目標: 96 レース × 50 万pt 制約を機械的にクリアしつつメインで稼ぐ
+  hybrid_enabled: true
+  sub_bet_amount: 2000          # サブベット額 (制約充足用)
+                                # 274レース - 35メイン = 239サブ, 平均 2000pt → 47.8万pt
+                                # メイン 35 × 3000 = 10.5万 → 総額 58.3万 (50万制約 ✓)
+
+  # 参考: 前セッションの Kelly params (Phase 4 で有効化)
+  kelly_fraction: 0.25
+  max_bet_fraction: 0.05
+  per_race_cap: 10000
+
+# 特徴量パイプライン用 (train と同じ設定を継承)
+bayesian:
+  alpha_prior: 2
+  beta_prior: 5

@@ -512,16 +512,24 @@ def scrape_today_races(
     if date is None:
         date = datetime.now().strftime("%Y%m%d")
 
-    url = f"{RACE_CARD_BASE}/top/race_list.html?kaisai_date={date}"
-    resp = _request_with_retry(url, max_retries, timeout, interval)
-    if resp is None:
-        return []
+    # race_list.html は JavaScript レンダリングで、静的 HTML にレース一覧が
+    # 含まれない。JS が読み込むフラグメント race_list_sub.html を先に叩く
+    # (こちらは静的 HTML に全レースが入っている)。保険で従来 URL にもフォールバック。
+    urls = [
+        f"{RACE_CARD_BASE}/top/race_list_sub.html?kaisai_date={date}",
+        f"{RACE_CARD_BASE}/top/race_list.html?kaisai_date={date}",
+    ]
+    race_items = []
+    for url in urls:
+        resp = _request_with_retry(url, max_retries, timeout, interval)
+        if resp is None:
+            continue
+        soup = BeautifulSoup(resp.text, "html.parser")
+        race_items = soup.find_all("li", class_="RaceList_DataItem")
+        if race_items:
+            break
 
-    soup = BeautifulSoup(resp.text, "html.parser")
     races = []
-
-    # レース一覧の項目を検索
-    race_items = soup.find_all("li", class_="RaceList_DataItem")
     for item in race_items:
         link = item.find("a")
         if not link or "href" not in link.attrs:
@@ -533,11 +541,11 @@ def scrape_today_races(
             continue
         race_id = race_id_m.group(1)
 
-        # レース番号
-        race_num_elem = item.find("span", class_="Race_Num")
-        race_num_text = race_num_elem.get_text(strip=True) if race_num_elem else ""
-        race_num_m = re.search(r"(\d+)", race_num_text)
-        race_num = int(race_num_m.group(1)) if race_num_m else 0
+        # レース番号と開催場は race_id (YYYYPPKKDDRR) から導出する。
+        # HTML の表示要素 (Race_Num や開催見出し) はページ版とフラグメント版で
+        # 構造が違い壊れやすいため、ID 由来の方が堅牢。
+        race_num = int(race_id[10:12]) if len(race_id) == 12 else 0
+        place = _CODE_TO_PLACE.get(race_id[4:6], "") if len(race_id) == 12 else ""
 
         # レース名
         race_name_elem = item.find("span", class_="ItemTitle")
@@ -550,16 +558,6 @@ def scrape_today_races(
             tm = re.search(r"(\d{1,2}:\d{2})", time_elem.get_text())
             if tm:
                 start_time = tm.group(1)
-
-        # 開催場所（親の開催ブロックから取得）
-        place = ""
-        parent_block = item.find_parent("div", class_="RaceList_DataList")
-        if parent_block:
-            prev = parent_block.find_previous("p", class_="RaceList_DataTitle")
-            if prev:
-                place_m = re.search(r"(\d+)回(.+?)(\d+)日", prev.get_text())
-                if place_m:
-                    place = place_m.group(2).strip()
 
         races.append({
             "race_id": race_id,

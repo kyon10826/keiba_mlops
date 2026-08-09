@@ -33,3 +33,6 @@ logs/
 
 # OS
 .DS_Store
+
+# 学習スモークの成果物 (本番 models_masters は追跡する)
+models_masters_smoke/
