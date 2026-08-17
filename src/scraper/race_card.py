@@ -492,6 +492,87 @@ def get_horse_pedigree(
     return father, mother
 
 
+def scrape_shutuba_light(
+    race_id: str,
+    max_retries: int = 3,
+    timeout: int = 30,
+    interval: float = 1.5,
+) -> dict | None:
+    """出馬表ページ 1 リクエストで、当日ループに必要な最小情報だけを取る軽量版。
+
+    scrape_race_card() は馬ごとに血統ページも叩くため 1 レース 20 秒以上かかる。
+    当日ループでは「騎手 ID (大会 API は騎手名しか返さない)」「馬体重 (発走約
+    50 分前に公開。朝の出馬表 API には無い)」「天候・馬場」だけあればよいので、
+    このページ 1 枚から取る。
+
+    Returns:
+        {
+          "horses": DataFrame(horse_num, jockey_id, jockey_name, weight, inc_dec),
+          "weather": "晴" | None,
+          "state": "良" | None,
+        }
+        取得失敗時は None。weight / inc_dec は未公開なら NaN。
+    """
+    url = f"{RACE_CARD_BASE}/race/shutuba.html?race_id={race_id}"
+    resp = _request_with_retry(url, max_retries, timeout, interval)
+    if resp is None:
+        return None
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    weather = state = None
+    info = soup.find("div", class_="RaceData01")
+    if info:
+        txt = info.get_text(" ", strip=True)
+        m = re.search(r"天候\s*:\s*(\S+)", txt)
+        weather = m.group(1) if m else None
+        m = re.search(r"馬場\s*:\s*(\S+)", txt)
+        state = m.group(1) if m else None
+
+    table = soup.find("table", class_="Shutuba_Table") or soup.find("table", class_="ShutubaTable")
+    if not table:
+        logger.warning("scrape_shutuba_light: no table for %s", race_id)
+        return None
+
+    horses = []
+    for row in table.find_all("tr"):
+        cols = row.find_all("td")
+        if len(cols) < 9:
+            continue
+        hnum_text = cols[1].get_text(strip=True)
+        if not hnum_text.isdigit():
+            continue
+        jockey_id = 0
+        jockey_name = ""
+        jl = cols[6].find("a")
+        if jl:
+            jockey_name = jl.get_text(strip=True)
+            if "href" in jl.attrs:
+                m = re.search(r"jockey/(?:result/recent/)?(\d+)", jl["href"])
+                if m:
+                    jockey_id = int(m.group(1))
+        # 馬体重: "466 (+10)" / 未公開は "" や "計不"
+        weight = float("nan")
+        inc_dec = float("nan")
+        wtxt = cols[8].get_text(" ", strip=True)
+        m = re.match(r"(\d{3})\s*\(([+-]?\d+)\)", wtxt)
+        if m:
+            weight = float(m.group(1))
+            inc_dec = float(m.group(2))
+        elif re.match(r"^\d{3}$", wtxt):
+            weight = float(wtxt)
+            inc_dec = 0.0
+        horses.append({
+            "horse_num": int(hnum_text),
+            "jockey_id": jockey_id,
+            "jockey_name": jockey_name,
+            "weight": weight,
+            "inc_dec": inc_dec,
+        })
+    if not horses:
+        return None
+    return {"horses": pd.DataFrame(horses), "weather": weather, "state": state}
+
+
 def scrape_today_races(
     date: str | None = None,
     max_retries: int = 3,

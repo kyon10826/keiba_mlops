@@ -59,6 +59,37 @@ python3 scripts/run_live.py --config config/masters_2026.yaml --date 20250831 --
 python3 -m unittest discover -s tests
 ```
 
+## 0.7 実 API のスキーマと補完 (2026-08-17 実データで確認済み)
+
+当日出馬表 API の実レスポンスは学習データ (record_data 47 列) と大きく異なる
+**14 列** (`place, race_num, horse_num, dist, horse, sex, age, jockey(名前), loaf_weight,
+father, mother, id, waku_num, race_id`)。`normalize_runtable()` と `enrich_from_netkeiba()`
+が以下のように埋める:
+
+| 学習時の列 | 当日の入手元 | 備考 |
+|---|---|---|
+| class_code / track_code / year / month / day | timetable API を (place, race_num) で結合 | |
+| jockey_id | **netkeiba 出馬表** (レースごと 1 リクエスト、JRA 騎手コード) | API は騎手名しか返さない。`data/jockey_master.csv` に名前→ID をキャッシュ (netkeiba 不通時のフォールバック) |
+| weight / inc_dec (馬体重) | 朝: 履歴の前走馬体重で補完 (増減 0) → 発走 4分10秒前: netkeiba から実測値で更新して再予測 | 0 埋めは学習分布外になるため厳禁 |
+| state / weather | netkeiba 出馬表 (判明していれば)、無ければ 良 / 晴 | |
+| basis_weight | loaf_weight を改名 | |
+| horse_N / times / daily | 頭数集計 / race_id から導出 | |
+| 結果系 (rank, pop, prize …) | 0 | 全ローリング特徴量が shift(1) なので当該行の値は混入しない |
+
+- 朝の netkeiba 補完は 36 レースで約 1 分。8/9 分の実データで騎手 ID 解決 97 名、
+  全 36 レースの判定・ログ出力まで通ることを `--dry-run --skip-wait` で確認済み。
+- 大会 API は過去日も返すので、任意の過去開催日で `--dry-run --skip-wait` を回せば
+  実 API 経路のリハーサルができる (投票は行わない)。
+
+### 投票 API の仕様メモ (2026 参加マニュアル)
+
+- 投票レスポンスは `data.success_count / error_count / list_error` と
+  トップレベルの `remaining_money`。`error_count>0` や `success_count==0` はクライアントが失敗扱いにする
+- **投票確認 (GET /bet) は投票直後だと未反映になりうる (非同期。1 分程度あける)**。
+  run_live は投票直後には確認せず、次レースの処理時に 60 秒以上経過分をまとめて確認し、
+  日次終了時に残り全件を確認する (`verified` 列に反映)
+- 締切内なら再投票可 (前の投票は上書き)。ランキングは 手持ち pt > レース的中率 > ◎勝率
+
 ## 1. 試験運用日 (8/15, 16, 22, 23) の手順
 
 ### 朝 9:00 過ぎ: API 疎通確認

@@ -70,9 +70,11 @@ from src.strategy.kelly import compute_bet_amount
 from src.api.masters_client import (
     MastersDataClient,
     MastersVoteClient,
+    normalize_runtable,
     race_id_to_odds_id,
     race_id_to_vote_id,
 )
+from src.scraper.race_card import scrape_shutuba_light
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("run_live")
@@ -151,6 +153,145 @@ def compute_big_amount(strat: dict, state: dict, date_str: str) -> int:
     amt = need / fav_left
     amt = max(float(strat["big_amount_min"]), min(float(strat["big_amount_max"]), amt))
     return int(amt // unit) * unit
+
+
+JOCKEY_CACHE_PATH = "data/jockey_master.csv"
+NETKEIBA_INTERVAL_SEC = 1.5
+
+
+def enrich_from_netkeiba(runtable: pd.DataFrame, use_cache: bool = True) -> pd.DataFrame:
+    """大会 API に無い列 (騎手 ID・馬体重・天候・馬場) を netkeiba の出馬表で補う。
+
+    大会 API の出馬表は騎手を「名前 (4 文字)」でしか返さないが、学習済みモデルの
+    騎手特徴量は JRA 騎手コード (jockey_id) で結合している。netkeiba の出馬表は
+    同じ JRA コードをリンクに持つので、レースごとに 1 リクエストで
+    (馬番 → jockey_id) を引き、(place, race_num, horse_num) で結合する。
+
+    フォールバック順: netkeiba (当日・正確) → 騎手名キャッシュ CSV → 0 (コールドスタート)。
+    netkeiba が落ちていても投票ループ自体は止めない。
+    """
+    out = runtable.copy()
+    name_cache: dict[str, int] = {}
+    if use_cache and os.path.exists(JOCKEY_CACHE_PATH):
+        try:
+            cache_df = pd.read_csv(JOCKEY_CACHE_PATH)
+            name_cache = dict(zip(cache_df["jockey_name_api"], cache_df["jockey_id"]))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("騎手キャッシュ読込失敗 (%s)", e)
+
+    race_ids = out["race_id"].astype("int64").unique()
+    logger.info("netkeiba から騎手 ID / 馬体重を補完中 (%d レース、約 %d 秒)...",
+                len(race_ids), int(len(race_ids) * NETKEIBA_INTERVAL_SEC))
+    n_ok = 0
+    for rid in race_ids:
+        nk_id = race_id_to_vote_id(rid)  # 投票用 12 桁 = netkeiba の race_id
+        try:
+            res = scrape_shutuba_light(nk_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("netkeiba 出馬表取得失敗 race=%s (%s)", nk_id, e)
+            res = None
+        time.sleep(NETKEIBA_INTERVAL_SEC)
+        if res is None:
+            continue
+        n_ok += 1
+        mask = out["race_id"].astype("int64") == rid
+        h = res["horses"].set_index("horse_num")
+        idx = out.loc[mask, "horse_num"].astype(int)
+        out.loc[mask, "jockey_id"] = idx.map(h["jockey_id"]).fillna(0).astype(int).values
+        if h["weight"].notna().any():
+            out.loc[mask, "weight"] = idx.map(h["weight"]).values
+            out.loc[mask, "inc_dec"] = idx.map(h["inc_dec"]).values
+        if res.get("state"):
+            out.loc[mask, "state"] = res["state"]
+        if res.get("weather"):
+            out.loc[mask, "weather"] = res["weather"]
+        # 騎手名 (API 表記) → ID をキャッシュに蓄積
+        if "jockey" in out.columns:
+            pairs = out.loc[mask & (out["jockey_id"] > 0), ["jockey", "jockey_id"]]
+            for name, jid in pairs.itertuples(index=False):
+                name_cache[str(name)] = int(jid)
+
+    # netkeiba で引けなかった馬はキャッシュで補完
+    if "jockey" in out.columns and name_cache:
+        miss = out["jockey_id"].fillna(0).astype(int) == 0
+        out.loc[miss, "jockey_id"] = (
+            out.loc[miss, "jockey"].astype(str).map(name_cache).fillna(0).astype(int).values
+        )
+    resolved = int((out["jockey_id"].fillna(0).astype(int) > 0).sum())
+    logger.info("騎手 ID 解決: %d/%d 頭 (netkeiba %d/%d レース成功)",
+                resolved, len(out), n_ok, len(race_ids))
+
+    if use_cache and name_cache:
+        os.makedirs(os.path.dirname(JOCKEY_CACHE_PATH), exist_ok=True)
+        pd.DataFrame(sorted(name_cache.items()), columns=["jockey_name_api", "jockey_id"]) \
+            .to_csv(JOCKEY_CACHE_PATH, index=False)
+    return out
+
+
+def impute_weight_from_history(runtable: pd.DataFrame, hist: pd.DataFrame) -> pd.DataFrame:
+    """馬体重が未公開の馬に、履歴の直近馬体重を補完する (増減は 0)。
+
+    学習時の weight_horse は当日の実測馬体重だが、朝の出馬表 API には無い。
+    0 で埋めると学習分布外 (最軽量馬 380kg 未満) になり予測が歪むため、
+    馬体重は安定している (前走比 ±10kg 程度) ことを利用して前走値で代用する。
+    初出走馬など履歴が無い場合はレース内平均、それも無ければ 470kg。
+    """
+    out = runtable.copy()
+    if "weight" not in out.columns:
+        out["weight"] = float("nan")
+    need = out["weight"].isna()
+    if not need.any():
+        return out
+    h = hist[pd.to_numeric(hist["weight"], errors="coerce").fillna(0) > 0]
+    last_w = (
+        h.sort_values("race_id").groupby("id")["weight"].last()
+    )
+    out.loc[need, "weight"] = out.loc[need, "id"].map(last_w).values
+    still = out["weight"].isna()
+    if still.any():
+        race_mean = out.groupby(["place", "race_num"])["weight"].transform("mean")
+        out.loc[still, "weight"] = race_mean[still]
+    out["weight"] = out["weight"].fillna(470.0)
+    out["inc_dec"] = pd.to_numeric(out["inc_dec"], errors="coerce").fillna(0.0)
+    logger.info("馬体重: 前走値で補完 %d 頭 / 実測 %d 頭",
+                int(need.sum()), int((~need).sum()))
+    return out
+
+
+def refresh_live_weight(
+    race_rows: pd.DataFrame, netkeiba_race_id: str,
+) -> tuple[pd.DataFrame, bool]:
+    """発走直前に公開された実測馬体重で weight 系 3 特徴量を差し替える。
+
+    weight_horse / weight_change / weight_zscore は当該レース内だけで
+    完結する特徴量なので、他の 43 列を再計算せずに更新できる。
+    取得失敗・未公開なら朝の補完値のまま返す。
+
+    Returns:
+        (rows, changed) — changed=True のとき呼び出し側は再予測する
+    """
+    try:
+        res = scrape_shutuba_light(netkeiba_race_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("直前馬体重の取得失敗 (%s)。朝の補完値を使用", e)
+        return race_rows, False
+    if res is None or res["horses"]["weight"].isna().all():
+        return race_rows, False
+    rows = race_rows.copy()
+    h = res["horses"].set_index("horse_num")
+    idx = rows["horse_num"].astype(int)
+    w = idx.map(h["weight"])
+    d = idx.map(h["inc_dec"])
+    ok = w.notna().values
+    if not ok.any():
+        return race_rows, False
+    rows.loc[ok, "weight_horse"] = w[ok].values
+    rows.loc[ok, "weight_change"] = d[ok].fillna(0).values
+    std = rows["weight_horse"].std()
+    std = std if std and std > 0 else 1.0
+    rows["weight_zscore"] = (rows["weight_horse"] - rows["weight_horse"].mean()) / std
+    logger.info("直前馬体重を反映: %d/%d 頭", int(ok.sum()), len(rows))
+    return rows, True
 
 
 def build_day_features(
@@ -280,28 +421,40 @@ def decide_bet_ev_market(
     return decide_bet(race_rows, win_odds_df, strat, big_amount=big_amount)
 
 
-def predict_win_probs(day_feat: pd.DataFrame, model_dir: str) -> pd.DataFrame:
-    """単勝モデル (+ キャリブレータがあれば校正) で win_pred_prob を付与する。"""
-    win_model = load_win_model(os.path.join(model_dir, "win_model.txt"))
-    win_meta = load_win_meta(os.path.join(model_dir, "win_meta.pkl"))
-    feature_columns = win_meta["feature_columns"]
-    assert_no_market_info(feature_columns)
+_WIN_BUNDLE_CACHE: dict[str, dict] = {}
 
-    for c in feature_columns:
+
+def _load_win_bundle(model_dir: str) -> dict:
+    """単勝モデル・メタ・キャリブレータを一度だけ読み込んでキャッシュする
+    (レース毎の再予測で毎回ディスクから読まないため)。"""
+    if model_dir not in _WIN_BUNDLE_CACHE:
+        win_meta = load_win_meta(os.path.join(model_dir, "win_meta.pkl"))
+        assert_no_market_info(win_meta["feature_columns"])
+        cal_path = os.path.join(model_dir, "win_calibrator.pkl")
+        _WIN_BUNDLE_CACHE[model_dir] = {
+            "model": load_win_model(os.path.join(model_dir, "win_model.txt")),
+            "feature_columns": win_meta["feature_columns"],
+            "calibrator": HoldoutCalibrator.load(cal_path) if os.path.exists(cal_path) else None,
+        }
+        if _WIN_BUNDLE_CACHE[model_dir]["calibrator"] is None:
+            logger.info("No win calibrator found; using raw probs")
+    return _WIN_BUNDLE_CACHE[model_dir]
+
+
+def predict_win_probs(day_feat: pd.DataFrame, model_dir: str, verbose: bool = True) -> pd.DataFrame:
+    """単勝モデル (+ キャリブレータがあれば校正) で win_pred_prob を付与する。"""
+    b = _load_win_bundle(model_dir)
+    day_feat = day_feat.copy()
+    for c in b["feature_columns"]:
         if c not in day_feat.columns:
             day_feat[c] = 0.0
-    raw = win_model.predict(day_feat[feature_columns])
+    raw = b["model"].predict(day_feat[b["feature_columns"]])
     day_feat["win_pred_prob_raw"] = raw
-
-    cal_path = os.path.join(model_dir, "win_calibrator.pkl")
-    if os.path.exists(cal_path):
-        calibrator = HoldoutCalibrator.load(cal_path)
-        day_feat["win_pred_prob"] = calibrator.predict(raw)
-        logger.info("Win calibrator applied (prob range: %.4f - %.4f)",
+    day_feat["win_pred_prob"] = b["calibrator"].predict(raw) if b["calibrator"] else raw
+    if verbose:
+        logger.info("Win probs (calibrated=%s) range: %.4f - %.4f",
+                    b["calibrator"] is not None,
                     day_feat["win_pred_prob"].min(), day_feat["win_pred_prob"].max())
-    else:
-        day_feat["win_pred_prob"] = raw
-        logger.info("No win calibrator found; using raw probs")
     return day_feat
 
 
@@ -440,6 +593,17 @@ def main():
         logger.error("出走表が空です。開催日か API 状態を確認してください。")
         return
 
+    # Step 1.5: API スキーマ (14 列) → record_data スキーマ (47 列)
+    # 大会 API に無い列は netkeiba (騎手 ID・馬体重・馬場) と履歴 (前走馬体重) で補う。
+    # リプレイ (record_data 由来) では normalize は無変更、補完もスキップされる。
+    runtable = normalize_runtable(runtable, timetable)
+    if not args.replay:
+        runtable = enrich_from_netkeiba(runtable)
+    if hist_all is None:
+        train_df, valid_df, test_df = load_all_data(cfg)
+        hist_all = pd.concat([train_df, valid_df, test_df], axis=0).reset_index(drop=True)
+    runtable = impute_weight_from_history(runtable, hist_all)
+
     # Step 2: 特徴量 + 予測
     # 静的特徴量 (46 列) は朝に一度だけ構築。市場特徴量はレース毎に
     # 5 分前オッズ取得後、decide_bet_ev_market 内で都度計算する 2 段構成。
@@ -461,6 +625,34 @@ def main():
     # Step 3-5: タイムテーブル順に投票ループ
     timetable = timetable.sort_values("start_time").reset_index(drop=True)
     bet_records: list[dict] = []
+    # 反映確認待ちの投票 [(record_index, race_id_vote, horse_num, amount, placed_ts)]
+    # 仕様上「投票直後は非同期処理のため未反映になりうる (1 分程度あける)」ので、
+    # 投票直後ではなく次レース処理時と日次終了時にまとめて確認する
+    pending_verify: list[tuple[int, str, int, int, float]] = []
+
+    def flush_verifications(min_age_sec: float = 60.0, force: bool = False) -> None:
+        """placed から min_age_sec 以上経った投票の反映を GET /bet でまとめて確認し、
+        bet_records の verified を更新してログ CSV を書き直す。"""
+        if args.dry_run or not pending_verify:
+            return
+        now_ts = time.time()
+        due = [pv for pv in pending_verify if force or now_ts - pv[4] >= min_age_sec]
+        if not due:
+            return
+        res = vote_client.verify_many([(rid, hn, amt) for _, rid, hn, amt, _ in due])
+        for idx, rid, hn, amt, _ in due:
+            v = res.get(str(rid))
+            bet_records[idx]["verified"] = v
+            if v is False:
+                logger.error(
+                    "★投票がプラットフォーム未反映/不一致 (race=%s 馬番%d %dpt)。"
+                    "netkeiba マイページで目視確認し、締切前なら再投票を検討", rid, hn, amt,
+                )
+            elif v is True:
+                logger.info("反映確認 OK: race=%s 馬番%d %dpt", rid, hn, amt)
+        done_idx = {pv[0] for pv in due}
+        pending_verify[:] = [pv for pv in pending_verify if pv[0] not in done_idx]
+        pd.DataFrame(bet_records).to_csv(bets_log_path, index=False)
 
     # favorite_concentration の大口額を残り日数から動的計算 (朝に 1 回)
     big_amount = compute_big_amount(strat, state, date_str)
@@ -507,6 +699,16 @@ def main():
                             place, race_num, start_time, int(wait_sec))
                 time.sleep(wait_sec)
 
+        # 前レースまでの投票の反映確認 (60 秒以上経過分)
+        flush_verifications()
+
+        # 発走直前に公開される実測馬体重で weight 系特徴量を更新して再予測
+        # (朝は前走値で補完しているため。失敗時は朝の値のまま)
+        if not args.replay:
+            race_rows, changed = refresh_live_weight(race_rows, race_id_vote)
+            if changed:
+                race_rows = predict_win_probs(race_rows, model_dir, verbose=False)
+
         # 5 分前オッズ取得 (失敗しても sub 投票は続行)
         try:
             win_odds_df = data_client.get_win_odds(race_id_odds)
@@ -539,12 +741,6 @@ def main():
             logger.error("%s %dR: 投票失敗 (%s)", place, race_num, e)
             continue
 
-        if result.verified is False:
-            logger.error(
-                "%s %dR: ★投票がプラットフォーム未反映の疑い (race=%s)。"
-                "netkeiba マイページで目視確認してください", place, race_num, race_id_vote,
-            )
-
         if result.remaining_points is not None:
             state["remaining_points"] = result.remaining_points
         if race_id_vote not in state["races_bet"]:
@@ -560,6 +756,10 @@ def main():
             "dry_run": args.dry_run,
         }
         bet_records.append(record)
+        if not args.dry_run:
+            pending_verify.append(
+                (len(bet_records) - 1, race_id_vote, int(decision["horse_num"]),
+                 int(decision["amount"]), time.time()))
         logger.info(
             "%s %dR: [%s] 馬番%d に %d pt (prob=%.3f odds=%s ev=%s) 残=%s",
             place, race_num, decision["bet_kind"], decision["horse_num"],
@@ -573,6 +773,18 @@ def main():
         pd.DataFrame(bet_records).to_csv(bets_log_path, index=False)
         with open(state_path, "w") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
+
+    # 残りの反映確認 (最後の投票から 60 秒以上あけてから全件)
+    if pending_verify and not args.dry_run:
+        wait = max(0.0, 60.0 - (time.time() - pending_verify[-1][4]))
+        if wait > 0 and not args.skip_wait:
+            logger.info("最終の反映確認まで %d 秒待機", int(wait))
+            time.sleep(wait)
+        flush_verifications(force=True)
+        n_bad = sum(1 for r in bet_records if r.get("verified") is False)
+        n_unk = sum(1 for r in bet_records if r.get("verified") is None)
+        logger.info("反映確認: OK %d / 未反映・不一致 %d / 判定不能 %d",
+                    len(bet_records) - n_bad - n_unk, n_bad, n_unk)
 
     # 日次サマリ
     logger.info("=" * 60)

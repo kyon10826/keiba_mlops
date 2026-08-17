@@ -156,6 +156,83 @@ class MastersDataClient:
         return win[["comb", "odds"]].reset_index(drop=True)
 
 
+# 当日出馬表 API が返す 14 列 (データ仕様書「出馬表(当日API)」準拠)
+RUNTABLE_API_COLUMNS = [
+    "place", "race_num", "horse_num", "dist", "horse", "sex", "age",
+    "jockey", "loaf_weight", "father", "mother", "id", "waku_num", "race_id",
+]
+
+# 朝の時点で不明な列の補完値 (record_data の最頻値)
+DEFAULT_STATE = "良"
+DEFAULT_WEATHER = "晴"
+
+
+def normalize_runtable(runtable: pd.DataFrame, timetable: pd.DataFrame) -> pd.DataFrame:
+    """当日出馬表 API (14 列) を record_data スキーマ (47 列) に正規化する。
+
+    実 API のレスポンスは学習データ (record_data) と列構成が大きく異なる:
+      - 騎手は「騎手名 (TARGET 仕様 4 文字)」のみで jockey_id が無い
+        → ここでは 0 のまま。run_live 側で netkeiba から ID を補う
+      - class_code / track_code / year / month / day は timetable 側にある
+        → (place, race_num) で結合
+      - 斤量は loaf_weight という列名 → basis_weight に改名
+      - 馬体重 (weight/inc_dec)・馬場状態・天候は朝の時点では未公開
+        → weight は NaN (run_live 側で前走馬体重を補完)、
+          state/weather は最頻値で補完 (発走前に判明すれば上書き)
+      - 結果系の列 (rank, time, pop, prize, ...) は 0 で埋める。
+        ローリング特徴量は全て shift(1) なので当該行の 0 は特徴量に混入しない
+
+    リプレイ (record_data 由来で 47 列揃っている) を渡した場合は無変更で返す。
+    """
+    from src.data.schema import COLUMN_NAMES
+
+    out = runtable.copy()
+    if all(c in out.columns for c in ("jockey_id", "class_code", "track_code", "year")):
+        return out  # 既に record_data スキーマ
+
+    # timetable から開催メタ情報を結合
+    tt_cols = [c for c in ("year", "month", "day", "class_code", "track_code")
+               if c in timetable.columns]
+    tt = timetable[["place", "race_num"] + tt_cols].drop_duplicates(["place", "race_num"])
+    out = out.merge(tt, on=["place", "race_num"], how="left", suffixes=("", "_tt"))
+
+    rid = out["race_id"].astype("int64").astype(str)
+    # 年は record_data 慣習の 2 桁 (loader が 4 桁化する経路と同じ扱いになる)
+    if "year" not in out.columns or out["year"].isna().any():
+        out["year"] = rid.str[0:4].astype(int)
+    out["year"] = out["year"].astype(int) % 100
+    if "month" not in out.columns or out["month"].isna().any():
+        out["month"] = rid.str[4:6].astype(int)
+    if "day" not in out.columns or out["day"].isna().any():
+        out["day"] = rid.str[6:8].astype(int)
+    out["times"] = rid.str[10:12].astype(int)
+    out["daily"] = rid.str[12:14].astype(int)
+
+    if "loaf_weight" in out.columns:
+        out["basis_weight"] = pd.to_numeric(out["loaf_weight"], errors="coerce")
+    out["horse_N"] = out.groupby(["place", "race_num"])["horse_num"].transform("count")
+
+    if "jockey_id" not in out.columns:
+        out["jockey_id"] = 0
+    if "state" not in out.columns:
+        out["state"] = DEFAULT_STATE
+    if "weather" not in out.columns:
+        out["weather"] = DEFAULT_WEATHER
+    if "blinker" not in out.columns:
+        out["blinker"] = ""
+    if "weight" not in out.columns:
+        out["weight"] = float("nan")
+    if "inc_dec" not in out.columns:
+        out["inc_dec"] = float("nan")
+
+    for col in COLUMN_NAMES:
+        if col not in out.columns:
+            out[col] = 0
+    for col in ("class_code", "track_code"):
+        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0).astype(int)
+    return out
+
+
 @dataclass
 class BetResult:
     """投票 1 回分の結果。
@@ -267,11 +344,20 @@ class MastersVoteClient:
             raise RuntimeError(f"Vote API bet failed: HTTP {resp.status_code} {resp.text[:300]}")
         body = resp.json()
         # HTTP 200 でもアプリ層のエラー (残高不足・締切超過など) がありうる。
-        # status フィールドが明示的に NG 系ならエラーとして扱う。
+        # 仕様 (2026 参加マニュアル): status=NG なら 1 件も処理されない。
+        # status=OK でも data.error_count > 0 / success_count == 0 は失敗扱い。
         if isinstance(body, dict):
             status = str(body.get("status", "OK")).upper()
             if status not in ("OK", "SUCCESS", "200"):
                 raise RuntimeError(f"Vote API bet rejected: {body}")
+            data = body.get("data")
+            if isinstance(data, dict):
+                err_n = data.get("error_count")
+                ok_n = data.get("success_count")
+                if (err_n is not None and int(err_n) > 0) or (ok_n is not None and int(ok_n) == 0):
+                    raise RuntimeError(
+                        f"Vote API bet not accepted (success={ok_n}, error={err_n}, "
+                        f"list_error={data.get('list_error')})")
         return body
 
     def check_bets(self, race_id_votes: list[str], access_token: str) -> dict:
@@ -342,6 +428,45 @@ class MastersVoteClient:
         expected_bet_id = f"b1_c0_{int(horse_num)}"
         return any(str(b.get("bet_id")) == expected_bet_id for b in bets)
 
+    def verify_many(self, items: list[tuple[str, int, int]]) -> dict[str, bool | None]:
+        """複数レースの投票反映をまとめて確認する (ログイン 1 回)。
+
+        Args:
+            items: [(race_id_vote, horse_num, amount), ...]
+        Returns:
+            {race_id_vote: True (一致) / False (未反映 or 不一致) / None (判定不能)}
+
+        仕様上、投票直後は非同期処理のため未反映になりうる (1 分程度あける推奨)。
+        呼び出し側は投票から 60 秒以上経ったものだけを渡すこと。
+        """
+        if not items:
+            return {}
+        result: dict[str, bool | None] = {}
+        try:
+            token = self.login()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("verify_many: login failed (%s)", e)
+            return {rid: None for rid, _, _ in items}
+        try:
+            body = self.check_bets([rid for rid, _, _ in items], token)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("verify_many: GET /bet failed (%s)", e)
+            return {rid: None for rid, _, _ in items}
+        finally:
+            self.logout(token)
+        registered = extract_registered_bets(body)
+        for rid, horse_num, amount in items:
+            bets = registered.get(str(rid), [])
+            expected = f"b1_c0_{int(horse_num)}"
+            ok = False
+            for b in bets:
+                if str(b.get("bet_id")) == expected:
+                    money = pd.to_numeric(b.get("money"), errors="coerce")
+                    ok = bool(pd.notna(money) and int(money) == int(amount))
+                    break
+            result[str(rid)] = ok
+        return result
+
     def place_win_bet(
         self,
         race_id_vote: str,
@@ -350,9 +475,9 @@ class MastersVoteClient:
         deadline_ts: float | None = None,
         max_attempts: int = 2,
         retry_interval: float = 3.0,
-        verify: bool = True,
+        verify: bool = False,
     ) -> BetResult:
-        """単勝 1 点投票 (ログイン → 投票 → 反映確認 → ログアウトを一括実行)。
+        """単勝 1 点投票 (ログイン → 投票 → ログアウトを一括実行)。
 
         Args:
             race_id_vote: 12 桁の netkeiba 形式 race_id (race_id_to_vote_id で変換)
@@ -361,7 +486,10 @@ class MastersVoteClient:
             deadline_ts: 投票締切の UNIX 時刻。過ぎていたらリトライしない
                 (締切 = 発走 3 分前。締切後の投票は無効なので粘らない)
             max_attempts: ログイン〜投票のリトライ回数 (一時的なネットワーク断対策)
-            verify: True なら投票直後に GET /bet で反映を確認して verified に載せる
+            verify: True なら投票直後に GET /bet で反映を確認する。
+                ただし仕様上「投票直後は非同期処理のため未反映になりうる」ため
+                既定は False。反映確認は 60 秒以上あけて verify_many() で行う
+                (run_live は次レースの処理時にまとめて確認する)。
         """
         bet_data = self.build_win_bet_data(race_id_vote, horse_num, amount)
 
