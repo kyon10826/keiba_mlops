@@ -36,3 +36,6 @@ logs/
 
 # 学習スモークの成果物 (本番 models_masters は追跡する)
 models_masters_smoke/
+
+# 騎手名→JRAコードのキャッシュ (公開参照情報。netkeiba 不通時のフォールバック用に追跡)
+!data/jockey_master.csv
