@@ -155,6 +155,26 @@ class MastersDataClient:
         win["odds"] = pd.to_numeric(win["odds"], errors="coerce")
         return win[["comb", "odds"]].reset_index(drop=True)
 
+    def get_all_odds(self, odds_race_id: str) -> pd.DataFrame:
+        """全券種のオッズを返す (odds_type: 1単勝, 2複勝, 3枠連, 4馬連, 5ワイド, 6馬単, 7三連複, 8三連単)。
+
+        multi_bet.select_multi_bets が期待する形式:
+            列 comb (str), odds_type (int), odds (float)
+        取得失敗時は空 DataFrame。
+        """
+        try:
+            odds = self.get_odds(odds_race_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("get_all_odds 失敗 race=%s (%s)", odds_race_id, e)
+            return pd.DataFrame(columns=["comb", "odds_type", "odds"])
+        if odds.empty or "odds_type" not in odds.columns:
+            return pd.DataFrame(columns=["comb", "odds_type", "odds"])
+        out = odds.copy()
+        out["odds"] = pd.to_numeric(out["odds"], errors="coerce")
+        out = out.dropna(subset=["odds"])
+        out = out[out["odds"] > 0]
+        return out[["comb", "odds_type", "odds"]].reset_index(drop=True)
+
 
 # 当日出馬表 API が返す 14 列 (データ仕様書「出馬表(当日API)」準拠)
 RUNTABLE_API_COLUMNS = [
@@ -466,6 +486,90 @@ class MastersVoteClient:
                     break
             result[str(rid)] = ok
         return result
+
+    @staticmethod
+    def build_multi_bet_data(
+        race_id_vote: str, bets: list, use_padded_bet_id: bool = False,
+    ) -> dict:
+        """複数買い目を 1 レース分の bet_data にまとめる。
+
+        Args:
+            race_id_vote: 12 桁 race_id
+            bets: MultiBetCandidate のリスト (bet_id / amount を持つ)
+            use_padded_bet_id: True なら ゼロ埋め形式 (b7_c0_010203)、
+                False なら ハイフン形式 (b7_c0_1-2-3)。初回投票で NG が返る場合
+                config で切替できるように両対応。
+
+        Returns:
+            {"race_id": ..., "mark": {...}, "bet": [{bet_id, money}, ...]}
+        """
+        first_horse = str(int(bets[0].horses[0])) if bets else "1"
+        return {
+            "race_id": race_id_vote,
+            "mark": {first_horse: 1},  # mark は形式的な必須項目
+            "bet": [
+                {
+                    "bet_id": (b.bet_id_padded if use_padded_bet_id else b.bet_id),
+                    "money": str(int(b.amount)),
+                }
+                for b in bets
+            ],
+        }
+
+    def place_multi_bet(
+        self,
+        race_id_vote: str,
+        bets: list,
+        deadline_ts: float | None = None,
+        max_attempts: int = 2,
+        retry_interval: float = 3.0,
+        use_padded_bet_id: bool = False,
+    ):
+        """複数買い目を 1 リクエストで送信する (POST /bet は配列を受け付ける)。
+
+        Returns:
+            BetResult 互換の辞書 (raw_response と remaining_points を含む)
+        """
+        if not bets:
+            return None
+        bet_data = self.build_multi_bet_data(race_id_vote, bets, use_padded_bet_id)
+        total_amount = sum(int(b.amount) for b in bets)
+
+        if self.dry_run:
+            logger.info("[DRY-RUN] multi bet: %s", bet_data)
+            return BetResult(
+                ok=True, race_id_vote=race_id_vote, horse_num=0,
+                amount=total_amount, remaining_points=None,
+                raw_response={"dry_run": True, "bet_data": bet_data}, verified=None,
+            )
+
+        last_err: Exception | None = None
+        for attempt in range(max_attempts):
+            try:
+                access_token = self.login()
+                try:
+                    body = self.bet(bet_data, access_token)
+                finally:
+                    self.logout(access_token)
+                return BetResult(
+                    ok=True, race_id_vote=race_id_vote, horse_num=0,
+                    amount=total_amount,
+                    remaining_points=self._extract_remaining(body),
+                    raw_response=body, verified=None,
+                )
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                logger.warning(
+                    "place_multi_bet attempt %d/%d failed (race=%s): %s",
+                    attempt + 1, max_attempts, race_id_vote, e,
+                )
+                if attempt >= max_attempts - 1:
+                    break
+                if deadline_ts is not None and time.time() + retry_interval >= deadline_ts:
+                    logger.error("締切迫るためリトライ中止 (race=%s)", race_id_vote)
+                    break
+                time.sleep(retry_interval)
+        raise RuntimeError(f"place_multi_bet failed (race={race_id_vote}): {last_err}")
 
     def place_win_bet(
         self,

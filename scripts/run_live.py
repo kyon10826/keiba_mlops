@@ -74,6 +74,7 @@ from src.api.masters_client import (
     race_id_to_odds_id,
     race_id_to_vote_id,
 )
+from src.strategy.multi_bet import select_multi_bets
 from src.scraper.race_card import scrape_shutuba_light
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -125,6 +126,27 @@ DEFAULT_LIVE_STRATEGY = {
     "anaba_min_prob": 0.05,         # 校正後勝率 5% 以上 (緩め: 高くすると ROI 悪化)
     "anaba_amount": 100,            # 固定 100pt (100 pt 単位の最小)
     "anaba_max_per_race": 1,        # 1 レース最大何頭に賭けるか
+    # --- 多重ベット (三連複・三連単・馬単・馬連) — Harville で EV 計算 ---
+    # 期待値目標: 高分散でも上振れの余地 (三連単 100-500 倍配当) を狙う設計。
+    # 平均 ROI は控除率のためマイナス想定だが、1 hit で +30k-500k の上振れが可能。
+    # 目安: 1 レース 6 点×300pt = 1,800pt、9 日 20 レース/日 = 32.4 万 pt / 9 日投入。
+    # 三連複 hit rate ~5%, 三連単 ~1%, 期待損失 -8〜-15% (単勝 fav_big より悪い)。
+    "multi_enabled": True,
+    "multi_bet_types": ["trio", "trifecta"],  # 券種を絞ると分散抑制
+    "multi_top_n_trio": 4,                    # 上位 4 頭で組合せ (4C3=4 通り)
+    "multi_top_n_trifecta": 4,                # 上位 4 頭で順列 (4P3=24 通り)
+    "multi_top_n_exacta": 5,
+    "multi_top_n_quinella": 5,
+    "multi_min_ev": 1.30,                     # 三連複 takeout=0.25 → 1/(1-0.25)=1.33 が損益分岐
+    "multi_min_prob_trio": 0.005,
+    "multi_min_prob_trifecta": 0.002,
+    "multi_min_prob_exacta": 0.01,
+    "multi_min_prob_quinella": 0.02,
+    "multi_max_odds": 500.0,
+    "multi_amount_per_bet": 300,
+    "multi_max_bets_per_race": 6,
+    "multi_max_total_per_race": 3000,
+    "multi_use_padded_bet_id": False,          # NG が返る場合 True に切替
     # --- hybrid (旧方式) 用 ---
     "win_prob_min": 0.10,
     "min_ev": 1.05,
@@ -885,6 +907,81 @@ def main():
                     state["remaining_points"],
                 )
                 pd.DataFrame(bet_records).to_csv(bets_log_path, index=False)
+                with open(state_path, "w") as f:
+                    json.dump(state, f, ensure_ascii=False, indent=2)
+
+        # --- 多重ベット (三連複・三連単・馬単・馬連) ---
+        if strat.get("multi_enabled", False) and not args.replay:
+            try:
+                all_odds = data_client.get_all_odds(race_id_odds)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("%s %dR: 全券種オッズ取得失敗 (%s)", place, race_num, e)
+                all_odds = pd.DataFrame(columns=["comb", "odds_type", "odds"])
+            if not all_odds.empty:
+                sorted_rows = race_rows.sort_values("horse_num").reset_index(drop=True)
+                horse_nums_arr = sorted_rows["horse_num"].astype(int).to_numpy()
+                win_probs_arr = sorted_rows["win_pred_prob"].to_numpy()
+                multi_cands = select_multi_bets(
+                    horse_nums_arr, win_probs_arr, all_odds, strat,
+                )
+                if multi_cands:
+                    try:
+                        result3 = vote_client.place_multi_bet(
+                            race_id_vote, multi_cands,
+                            deadline_ts=None if args.skip_wait else deadline_ts,
+                            use_padded_bet_id=bool(strat.get("multi_use_padded_bet_id", False)),
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("%s %dR: 多重ベット送信失敗 (%s)", place, race_num, e)
+                        result3 = None
+                    if result3 is not None:
+                        if result3.remaining_points is not None:
+                            state["remaining_points"] = result3.remaining_points
+                        for cand in multi_cands:
+                            state["total_wagered"] += int(cand.amount)
+                            rec = {
+                                "date": date_str, "place": place, "race_num": race_num,
+                                "start_time": start_time, "race_id_vote": race_id_vote,
+                                "horse_num": cand.horses[0],  # 代表馬番
+                                "amount": int(cand.amount),
+                                "bet_kind": cand.bet_type,
+                                "pred_prob": cand.joint_prob,
+                                "odds": cand.odds,
+                                "ev": cand.ev,
+                                "remaining_points": state["remaining_points"],
+                                "verified": None,
+                                "dry_run": args.dry_run,
+                                "bet_id": cand.bet_id,
+                                "horses": "-".join(str(h) for h in cand.horses),
+                            }
+                            bet_records.append(rec)
+                        logger.info(
+                            "%s %dR: [multi] %d 点合計 %d pt / 内訳 %s / 残=%s",
+                            place, race_num, len(multi_cands),
+                            sum(int(c.amount) for c in multi_cands),
+                            ", ".join(f"{c.bet_type}{c.horses}@{c.odds:.1f}(EV{c.ev:.2f})"
+                                      for c in multi_cands[:3]) + ("..." if len(multi_cands) > 3 else ""),
+                            state["remaining_points"],
+                        )
+                        pd.DataFrame(bet_records).to_csv(bets_log_path, index=False)
+                        with open(state_path, "w") as f:
+                            json.dump(state, f, ensure_ascii=False, indent=2)
+
+        # --- balance-check: API remaining_money から total_wagered を実残ベースで補正 ---
+        # fav_big 24,700 が API 応答で成立したのに実際は差引されていなかった事象
+        # (8/30 新潟 11R) を検知するため、初期額 100 万 - API 残 を真実として上書き。
+        # これにより「引かれていない投票」を total_wagered に加算する事故を防ぐ。
+        INITIAL_BANKROLL = 1_000_000
+        if state.get("remaining_points") is not None:
+            actual = INITIAL_BANKROLL - int(state["remaining_points"])
+            if abs(actual - state["total_wagered"]) >= 200:
+                logger.warning(
+                    "★残高不整合: total_wagered=%d, 実引落=%d (差 %+d pt)。"
+                    "投票が受理されたが差引されていない可能性。マイページで要確認",
+                    state["total_wagered"], actual,
+                    actual - state["total_wagered"],
+                )
+                state["total_wagered"] = actual  # 実残ベースに補正
                 with open(state_path, "w") as f:
                     json.dump(state, f, ensure_ascii=False, indent=2)
 

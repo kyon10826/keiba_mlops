@@ -49,12 +49,16 @@ def main():
     show = df.tail(args.tail) if args.tail else df
 
     KIND = {
-        "fav_big": "★大口",
-        "min":     " 最低",
-        "sub":     " 通常",
-        "main":    " 本命",
-        "ev":      "EV攻",
-        "anaba":   "🎲穴狙",
+        "fav_big":  "★大口",
+        "min":      " 最低",
+        "sub":      " 通常",
+        "main":     " 本命",
+        "ev":       "EV攻",
+        "anaba":    "🎲穴狙",
+        "trio":     "🎯三複",
+        "trifecta": "💎三単",
+        "quinella": " 馬連",
+        "exacta":   " 馬単",
     }
 
     print(f"{'発走':>5}  {'場所':<3}{'R':>3}  {'種別':<5} {'馬番':>3} {'金額':>7}  {'勝率':>6} {'ODDS':>6} {'EV':>5}  反映")

@@ -105,7 +105,7 @@ strategy:
 live:
   mode: "favorite_concentration"
   min_bet_per_race: 100        # 全レース top-1 への最低額 (96 レース制約を最安でクリア)
-  fav_max_odds: 1.5            # 大口対象: top-1 の 5 分前オッズがこの値以下
+  fav_max_odds: 3.5            # 大口対象: top-1 の 5 分前オッズがこの値以下
   fav_fallback_odds: 2.5       # 終盤に累計が不足する場合の拡張帯 (手動切替用)
   target_total_wagered: 510000 # 期間累計の目標投票額 (50 万制約 + 2% バッファ)
   big_amount_min: 5000
@@ -119,6 +119,19 @@ live:
   anaba_min_prob: 0.05
   anaba_amount: 100
   anaba_max_per_race: 1
+  # 多重ベット (三連複・三連単) — 1 レース最大 3,000pt で上振れ狙い
+  multi_enabled: true
+  multi_bet_types: ["trio", "trifecta"]
+  multi_top_n_trio: 4
+  multi_top_n_trifecta: 4
+  multi_min_ev: 1.30           # 三連複控除率 25% を超える閾値
+  multi_min_prob_trio: 0.005
+  multi_min_prob_trifecta: 0.002
+  multi_max_odds: 500.0
+  multi_amount_per_bet: 300
+  multi_max_bets_per_race: 6
+  multi_max_total_per_race: 3000
+  multi_use_padded_bet_id: false  # NG が返ったら true に切替
   min_bet_unit: 100
   odds_fetch_before_sec: 250   # 発走 4分10秒前にオッズ取得 (サーバは 4分30秒前に更新)
   bet_deadline_sec: 180        # 投票締切は発走 3 分前
