@@ -112,6 +112,13 @@ live:
   big_amount_max: 60000
   races_per_day_est: 36
   fav_rate_est: 0.06           # top-1 がオッズ≤1.5 になる割合 (実測 ~6%)
+  # 穴狙いサブベット (毎レース、10 倍以上 & 校正勝率 10% 以上なら 100pt 追加投票)
+  anaba_enabled: true
+  anaba_min_odds: 10.0
+  anaba_max_odds: 50.0
+  anaba_min_prob: 0.05
+  anaba_amount: 100
+  anaba_max_per_race: 1
   min_bet_unit: 100
   odds_fetch_before_sec: 250   # 発走 4分10秒前にオッズ取得 (サーバは 4分30秒前に更新)
   bet_deadline_sec: 180        # 投票締切は発走 3 分前

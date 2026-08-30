@@ -110,6 +110,21 @@ DEFAULT_LIVE_STRATEGY = {
     "races_per_day_est": 36,        # 1 日の想定レース数
     "fav_rate_est": 0.06,           # top-1 がオッズ≤1.5 になるレースの想定割合
     "remaining_days_default": 9,    # コンペ残り日数 (state で自動更新されるが初期値)
+    # --- 穴狙いサブベット (毎レース、10 倍以上で model 確率が閾値以上なら 100pt) ---
+    # 目的: 収支の上振れ余地を作る。1 レース +100pt、~30% で発火 = 1 日 ~30 * 100 = 3,000pt。
+    # 9 日で ~27,000pt を使うが、期待値は「モデル確率が校正されている」前提で±0 前後。
+    # 大外れでも 100pt × 発火数なので 50 万 pt 制約への影響は微小。
+    # バックテスト (4,173 レース) 結果:
+    #   (min_odds=10, max_odds=50, min_prob=0.05) → 発火率 94%、的中率 3.4%、
+    #   ROI -11.4% ≒ 9 日で ~30k pt 使って期待損 ~3.5k pt (的中時に +3000pt 級)
+    #   ※ min_prob を上げると ROI 悪化 (0.10 で -35.9%): モデルの穴推しは市場より弱い
+    #   → デフォルトは「上振れ余地を残しつつ損失を最小化」の設定にした
+    "anaba_enabled": True,
+    "anaba_min_odds": 10.0,         # 10 倍以上 (ユーザー指定)
+    "anaba_max_odds": 50.0,         # 50 倍まで許容 (バックテストで最良帯)
+    "anaba_min_prob": 0.05,         # 校正後勝率 5% 以上 (緩め: 高くすると ROI 悪化)
+    "anaba_amount": 100,            # 固定 100pt (100 pt 単位の最小)
+    "anaba_max_per_race": 1,        # 1 レース最大何頭に賭けるか
     # --- hybrid (旧方式) 用 ---
     "win_prob_min": 0.10,
     "min_ev": 1.05,
@@ -458,6 +473,63 @@ def predict_win_probs(day_feat: pd.DataFrame, model_dir: str, verbose: bool = Tr
     return day_feat
 
 
+def decide_anaba_bet(
+    race_rows: pd.DataFrame,
+    win_odds_df: pd.DataFrame,
+    strat: dict,
+    exclude_horse_num: int | None = None,
+) -> dict | None:
+    """穴狙いサブベット: 10 倍以上のオッズ帯で校正後勝率が閾値以上の馬に固定 100pt。
+
+    favorite_concentration の primary bet に上乗せする独立ベット。
+    - オッズ >= anaba_min_odds かつ <= anaba_max_odds
+    - 校正後勝率 >= anaba_min_prob (10 倍 × 10% = EV 1.0 が損益分岐)
+    - primary で既に投票した馬 (exclude_horse_num) は同じ bet_id 二重送信を避けて除外
+    - 該当馬の中で EV (= prob × odds) が最大の馬 1 頭を選ぶ
+
+    Returns:
+        {"horse_num", "amount", "bet_kind"="anaba", "pred_prob", "odds", "ev"} または None
+    """
+    if not strat.get("anaba_enabled", False):
+        return None
+    if race_rows.empty or win_odds_df.empty:
+        return None
+
+    rows = race_rows.copy()
+    rows["comb"] = rows["horse_num"].astype(int).astype(str).str.zfill(2)
+    merged = rows.merge(win_odds_df, on="comb", how="inner")
+    if merged.empty:
+        return None
+    merged["odds"] = pd.to_numeric(merged["odds"], errors="coerce")
+    merged = merged.dropna(subset=["odds"])
+
+    lo = float(strat["anaba_min_odds"])
+    hi = float(strat["anaba_max_odds"])
+    minp = float(strat["anaba_min_prob"])
+    cand = merged[
+        (merged["odds"] >= lo)
+        & (merged["odds"] <= hi)
+        & (merged["win_pred_prob"] >= minp)
+    ]
+    if exclude_horse_num is not None:
+        cand = cand[cand["horse_num"].astype(int) != int(exclude_horse_num)]
+    if cand.empty:
+        return None
+
+    cand = cand.copy()
+    cand["ev"] = cand["win_pred_prob"] * cand["odds"]
+    best = cand.sort_values("ev", ascending=False).iloc[0]
+
+    return {
+        "horse_num": int(best["horse_num"]),
+        "amount": int(strat["anaba_amount"]),
+        "bet_kind": "anaba",
+        "pred_prob": float(best["win_pred_prob"]),
+        "odds": float(best["odds"]),
+        "ev": float(best["ev"]),
+    }
+
+
 def decide_bet(
     race_rows: pd.DataFrame,
     win_odds_df: pd.DataFrame,
@@ -773,6 +845,48 @@ def main():
         pd.DataFrame(bet_records).to_csv(bets_log_path, index=False)
         with open(state_path, "w") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
+
+        # --- 穴狙いサブベット (100pt 独立) ---
+        anaba = decide_anaba_bet(
+            race_rows, win_odds_df, strat,
+            exclude_horse_num=decision["horse_num"],
+        )
+        if anaba is not None:
+            try:
+                result2 = vote_client.place_win_bet(
+                    race_id_vote, anaba["horse_num"], anaba["amount"],
+                    deadline_ts=None if args.skip_wait else deadline_ts,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("%s %dR: 穴狙い投票失敗 (%s)", place, race_num, e)
+                result2 = None
+            if result2 is not None:
+                if result2.remaining_points is not None:
+                    state["remaining_points"] = result2.remaining_points
+                state["total_wagered"] += anaba["amount"]
+                # 同じ race_id_vote は races_bet に追加しない (レース数は増えない)
+                record2 = {
+                    "date": date_str, "place": place, "race_num": race_num,
+                    "start_time": start_time, "race_id_vote": race_id_vote,
+                    **anaba,
+                    "remaining_points": state["remaining_points"],
+                    "verified": None,
+                    "dry_run": args.dry_run,
+                }
+                bet_records.append(record2)
+                if not args.dry_run:
+                    pending_verify.append(
+                        (len(bet_records) - 1, race_id_vote, int(anaba["horse_num"]),
+                         int(anaba["amount"]), time.time()))
+                logger.info(
+                    "%s %dR: [anaba] 馬番%d に %d pt (prob=%.3f odds=%.1f ev=%.2f) 残=%s",
+                    place, race_num, anaba["horse_num"], anaba["amount"],
+                    anaba["pred_prob"], anaba["odds"], anaba["ev"],
+                    state["remaining_points"],
+                )
+                pd.DataFrame(bet_records).to_csv(bets_log_path, index=False)
+                with open(state_path, "w") as f:
+                    json.dump(state, f, ensure_ascii=False, indent=2)
 
     # 残りの反映確認 (最後の投票から 60 秒以上あけてから全件)
     if pending_verify and not args.dry_run:
