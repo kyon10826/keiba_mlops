@@ -524,52 +524,114 @@ class MastersVoteClient:
         max_attempts: int = 2,
         retry_interval: float = 3.0,
         use_padded_bet_id: bool = False,
+        split: bool = True,
     ):
-        """複数買い目を 1 リクエストで送信する (POST /bet は配列を受け付ける)。
+        """複数買い目を送信する。
+
+        Args:
+            split: True (既定) = 1 買い目ずつ独立に POST (login 1 回で使い回し)。
+                   ある買い目の bet_id 形式が NG でも他は成立する故障分離型。
+                   False = 全買い目を 1 つの bet_data 配列にまとめて 1 POST。
+                   仕様上「エラー時は 1 件も処理されない」ので、format 不明な
+                   多券種を混ぜる場合は split=True 推奨。
 
         Returns:
-            BetResult 互換の辞書 (raw_response と remaining_points を含む)
+            split=False: 単一 BetResult (集約)
+            split=True:  list[BetResult | None]  買い目ごとの結果 (None = 失敗)
         """
         if not bets:
             return None
-        bet_data = self.build_multi_bet_data(race_id_vote, bets, use_padded_bet_id)
-        total_amount = sum(int(b.amount) for b in bets)
 
-        if self.dry_run:
-            logger.info("[DRY-RUN] multi bet: %s", bet_data)
-            return BetResult(
-                ok=True, race_id_vote=race_id_vote, horse_num=0,
-                amount=total_amount, remaining_points=None,
-                raw_response={"dry_run": True, "bet_data": bet_data}, verified=None,
-            )
-
-        last_err: Exception | None = None
-        for attempt in range(max_attempts):
-            try:
-                access_token = self.login()
-                try:
-                    body = self.bet(bet_data, access_token)
-                finally:
-                    self.logout(access_token)
+        # --- split=False: 従来のバッチ送信 ---
+        if not split:
+            bet_data = self.build_multi_bet_data(race_id_vote, bets, use_padded_bet_id)
+            total_amount = sum(int(b.amount) for b in bets)
+            if self.dry_run:
+                logger.info("[DRY-RUN] multi bet (batch): %s", bet_data)
                 return BetResult(
                     ok=True, race_id_vote=race_id_vote, horse_num=0,
-                    amount=total_amount,
-                    remaining_points=self._extract_remaining(body),
-                    raw_response=body, verified=None,
+                    amount=total_amount, remaining_points=None,
+                    raw_response={"dry_run": True, "bet_data": bet_data}, verified=None,
                 )
-            except Exception as e:  # noqa: BLE001
-                last_err = e
-                logger.warning(
-                    "place_multi_bet attempt %d/%d failed (race=%s): %s",
-                    attempt + 1, max_attempts, race_id_vote, e,
-                )
-                if attempt >= max_attempts - 1:
-                    break
-                if deadline_ts is not None and time.time() + retry_interval >= deadline_ts:
-                    logger.error("締切迫るためリトライ中止 (race=%s)", race_id_vote)
-                    break
-                time.sleep(retry_interval)
-        raise RuntimeError(f"place_multi_bet failed (race={race_id_vote}): {last_err}")
+            last_err: Exception | None = None
+            for attempt in range(max_attempts):
+                try:
+                    access_token = self.login()
+                    try:
+                        body = self.bet(bet_data, access_token)
+                    finally:
+                        self.logout(access_token)
+                    return BetResult(
+                        ok=True, race_id_vote=race_id_vote, horse_num=0,
+                        amount=total_amount,
+                        remaining_points=self._extract_remaining(body),
+                        raw_response=body, verified=None,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    last_err = e
+                    logger.warning(
+                        "place_multi_bet(batch) attempt %d/%d failed (race=%s): %s",
+                        attempt + 1, max_attempts, race_id_vote, e,
+                    )
+                    if attempt >= max_attempts - 1:
+                        break
+                    if deadline_ts is not None and time.time() + retry_interval >= deadline_ts:
+                        logger.error("締切迫るためリトライ中止 (race=%s)", race_id_vote)
+                        break
+                    time.sleep(retry_interval)
+            raise RuntimeError(f"place_multi_bet(batch) failed (race={race_id_vote}): {last_err}")
+
+        # --- split=True: 買い目ごとに独立 POST (login 1 回で使い回し) ---
+        results: list[BetResult | None] = []
+        if self.dry_run:
+            for cand in bets:
+                bet_id = cand.bet_id_padded if use_padded_bet_id else cand.bet_id
+                bd = {
+                    "race_id": race_id_vote,
+                    "mark": {str(int(cand.horses[0])): 1},
+                    "bet": [{"bet_id": bet_id, "money": str(int(cand.amount))}],
+                }
+                logger.info("[DRY-RUN] multi bet (split): %s", bd)
+                results.append(BetResult(
+                    ok=True, race_id_vote=race_id_vote, horse_num=int(cand.horses[0]),
+                    amount=int(cand.amount), remaining_points=None,
+                    raw_response={"dry_run": True, "bet_data": bd}, verified=None,
+                ))
+            return results
+
+        access_token = self.login()
+        try:
+            for cand in bets:
+                if deadline_ts is not None and time.time() >= deadline_ts:
+                    logger.error("締切超過のため以降の buy 中止 (race=%s)", race_id_vote)
+                    results.append(None)
+                    continue
+                bet_id = cand.bet_id_padded if use_padded_bet_id else cand.bet_id
+                bd = {
+                    "race_id": race_id_vote,
+                    "mark": {str(int(cand.horses[0])): 1},
+                    "bet": [{"bet_id": bet_id, "money": str(int(cand.amount))}],
+                }
+                try:
+                    body = self.bet(bd, access_token)
+                    results.append(BetResult(
+                        ok=True, race_id_vote=race_id_vote, horse_num=int(cand.horses[0]),
+                        amount=int(cand.amount),
+                        remaining_points=self._extract_remaining(body),
+                        raw_response=body, verified=None,
+                    ))
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "%s の 1 買い目 失敗 (bet_id=%s money=%d): %s。他は続行",
+                        race_id_vote, bet_id, int(cand.amount), e,
+                    )
+                    results.append(None)
+        finally:
+            self.logout(access_token)
+        n_ok = sum(1 for r in results if r is not None)
+        logger.info("multi bet split 完了: 成立 %d/%d (race=%s)",
+                    n_ok, len(bets), race_id_vote)
+        return results
 
     def place_win_bet(
         self,

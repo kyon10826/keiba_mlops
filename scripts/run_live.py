@@ -925,42 +925,57 @@ def main():
                     horse_nums_arr, win_probs_arr, all_odds, strat,
                 )
                 if multi_cands:
+                    # split=True: 1 買い目ずつ独立に送信 (bet_id 形式不明でも
+                    # 通ったものだけ集計、失敗したものはスキップ)
                     try:
-                        result3 = vote_client.place_multi_bet(
+                        results3 = vote_client.place_multi_bet(
                             race_id_vote, multi_cands,
                             deadline_ts=None if args.skip_wait else deadline_ts,
                             use_padded_bet_id=bool(strat.get("multi_use_padded_bet_id", False)),
+                            split=True,
                         )
                     except Exception as e:  # noqa: BLE001
                         logger.warning("%s %dR: 多重ベット送信失敗 (%s)", place, race_num, e)
-                        result3 = None
-                    if result3 is not None:
-                        if result3.remaining_points is not None:
-                            state["remaining_points"] = result3.remaining_points
-                        for cand in multi_cands:
-                            state["total_wagered"] += int(cand.amount)
-                            rec = {
-                                "date": date_str, "place": place, "race_num": race_num,
-                                "start_time": start_time, "race_id_vote": race_id_vote,
-                                "horse_num": cand.horses[0],  # 代表馬番
-                                "amount": int(cand.amount),
-                                "bet_kind": cand.bet_type,
-                                "pred_prob": cand.joint_prob,
-                                "odds": cand.odds,
-                                "ev": cand.ev,
-                                "remaining_points": state["remaining_points"],
-                                "verified": None,
-                                "dry_run": args.dry_run,
-                                "bet_id": cand.bet_id,
-                                "horses": "-".join(str(h) for h in cand.horses),
-                            }
-                            bet_records.append(rec)
+                        results3 = []
+                    n_ok = 0; n_fail = 0
+                    for cand, res in zip(multi_cands, results3 or []):
+                        if res is None:
+                            n_fail += 1
+                            logger.warning(
+                                "%s %dR: [%s] 買い目 %s @%.1f (%d pt) → 拒否",
+                                place, race_num, cand.bet_type,
+                                "-".join(str(h) for h in cand.horses), cand.odds, cand.amount,
+                            )
+                            continue
+                        n_ok += 1
+                        if res.remaining_points is not None:
+                            state["remaining_points"] = res.remaining_points
+                        state["total_wagered"] += int(cand.amount)
+                        rec = {
+                            "date": date_str, "place": place, "race_num": race_num,
+                            "start_time": start_time, "race_id_vote": race_id_vote,
+                            "horse_num": cand.horses[0],
+                            "amount": int(cand.amount),
+                            "bet_kind": cand.bet_type,
+                            "pred_prob": cand.joint_prob,
+                            "odds": cand.odds,
+                            "ev": cand.ev,
+                            "remaining_points": state["remaining_points"],
+                            "verified": None,
+                            "dry_run": args.dry_run,
+                            "bet_id": cand.bet_id,
+                            "horses": "-".join(str(h) for h in cand.horses),
+                        }
+                        bet_records.append(rec)
+                        if not args.dry_run:
+                            pending_verify.append(
+                                (len(bet_records) - 1, race_id_vote, int(cand.horses[0]),
+                                 int(cand.amount), time.time()))
+                    if n_ok + n_fail > 0:
                         logger.info(
-                            "%s %dR: [multi] %d 点合計 %d pt / 内訳 %s / 残=%s",
-                            place, race_num, len(multi_cands),
-                            sum(int(c.amount) for c in multi_cands),
-                            ", ".join(f"{c.bet_type}{c.horses}@{c.odds:.1f}(EV{c.ev:.2f})"
-                                      for c in multi_cands[:3]) + ("..." if len(multi_cands) > 3 else ""),
+                            "%s %dR: [multi] 成立 %d / 拒否 %d (合計 %d pt) 残=%s",
+                            place, race_num, n_ok, n_fail,
+                            sum(int(c.amount) for c, r in zip(multi_cands, results3 or []) if r is not None),
                             state["remaining_points"],
                         )
                         pd.DataFrame(bet_records).to_csv(bets_log_path, index=False)

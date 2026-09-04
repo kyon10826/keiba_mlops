@@ -102,3 +102,32 @@ class TestSelectMultiBets(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSplitModeShape(unittest.TestCase):
+    """place_multi_bet(split=True) の dry-run で N 個の結果が返ることを確認。"""
+
+    def test_dry_run_split_returns_per_bet_list(self):
+        from src.api.masters_client import MastersVoteClient
+        client = MastersVoteClient("id", "pw", dry_run=True)
+        cands = [
+            MultiBetCandidate("trio", (1, 2, 3), 0.05, 20.0, 1.0, 300),
+            MultiBetCandidate("trifecta", (1, 2, 3), 0.02, 80.0, 1.6, 300),
+        ]
+        results = client.place_multi_bet("202601020101", cands, split=True)
+        self.assertEqual(len(results), 2)
+        for r in results:
+            self.assertIsNotNone(r)
+            self.assertTrue(r.ok)
+
+    def test_dry_run_batch_returns_single(self):
+        from src.api.masters_client import MastersVoteClient
+        client = MastersVoteClient("id", "pw", dry_run=True)
+        cands = [
+            MultiBetCandidate("trio", (1, 2, 3), 0.05, 20.0, 1.0, 300),
+            MultiBetCandidate("trifecta", (1, 2, 3), 0.02, 80.0, 1.6, 300),
+        ]
+        result = client.place_multi_bet("202601020101", cands, split=False)
+        # batch モードは単一 BetResult
+        self.assertTrue(hasattr(result, "amount"))
+        self.assertEqual(result.amount, 600)
