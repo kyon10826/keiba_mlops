@@ -106,6 +106,9 @@ live:
   mode: "favorite_concentration"
   min_bet_per_race: 100        # 全レース top-1 への最低額 (96 レース制約を最安でクリア)
   fav_max_odds: 3.5            # 大口対象: top-1 の 5 分前オッズがこの値以下
+  # 大口 chunking (仕様バグ回避: 8/30 24,700pt, 9/5 31,100pt が単発だと差引されない)
+  fav_big_chunk_size: 1000     # 1 レースの大口を 1,000pt × N 回で送信
+  fav_big_chunk_max_time_sec: 100  # 全 chunk 送信に許される最大時間 (秒)
   fav_fallback_odds: 2.5       # 終盤に累計が不足する場合の拡張帯 (手動切替用)
   target_total_wagered: 510000 # 期間累計の目標投票額 (50 万制約 + 2% バッファ)
   big_amount_min: 5000
@@ -120,7 +123,7 @@ live:
   anaba_amount: 100
   anaba_max_per_race: 1
   # 多重ベット (三連複・三連単) — 1 レース最大 3,000pt で上振れ狙い
-  multi_enabled: true
+  multi_enabled: false
   multi_bet_types: ["trio", "trifecta"]
   multi_top_n_trio: 4
   multi_top_n_trifecta: 4

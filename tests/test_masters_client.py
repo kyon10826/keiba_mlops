@@ -110,3 +110,25 @@ class TestExtractRemaining(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestUnwrapDataShapes(unittest.TestCase):
+    """_unwrap_data が dict/list ラップ両方から key を取り出せることを検証。"""
+
+    def test_dict_form(self):
+        from src.api.masters_client import MastersDataClient
+        body = {"message":"OK", "data": {"timetable": [{"a":1}], "runtable": [{"b":2}]}}
+        self.assertEqual(MastersDataClient._unwrap_data(body, "timetable"), [{"a":1}])
+        self.assertEqual(MastersDataClient._unwrap_data(body, "runtable"), [{"b":2}])
+
+    def test_list_wrapped_form(self):
+        from src.api.masters_client import MastersDataClient
+        body = {"message":"OK", "data": [{"timetable": [{"a":1}], "runtable": [{"b":2}]}]}
+        self.assertEqual(MastersDataClient._unwrap_data(body, "timetable"), [{"a":1}])
+        self.assertEqual(MastersDataClient._unwrap_data(body, "runtable"), [{"b":2}])
+
+    def test_missing_key(self):
+        from src.api.masters_client import MastersDataClient
+        self.assertEqual(MastersDataClient._unwrap_data({"data": {}}, "timetable"), [])
+        self.assertEqual(MastersDataClient._unwrap_data({}, "timetable"), [])
+        self.assertEqual(MastersDataClient._unwrap_data(None, "timetable"), [])

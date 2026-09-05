@@ -113,6 +113,32 @@ class MastersDataClient:
             f"({type_of_data} id={id_str}): {last_err}"
         )
 
+    @staticmethod
+    def _unwrap_data(body: dict, key: str) -> list:
+        """レスポンスの data 部分から `key` (timetable/runtable/odds_rt) を取り出す。
+
+        API が返す形式は次のいずれかを想定 (運営側の実装ゆらぎに対応):
+          A. {"data": {"timetable": [...], "runtable": [...]}}  ← 従来
+          B. {"data": [{"timetable": [...], "runtable": [...]}]} ← 9/5 の実観測
+          C. {"data": [{"key": [...]}]}                          ← key ごとにラップ
+        いずれの場合も key に対応するリストを返す。見つからなければ [] を返す。
+        """
+        d = body.get("data") if isinstance(body, dict) else None
+        if d is None:
+            return []
+        # A: 直接 dict
+        if isinstance(d, dict) and key in d:
+            v = d[key]
+            return v if isinstance(v, list) else []
+        # B/C: list ラップ
+        if isinstance(d, list):
+            for elem in d:
+                if isinstance(elem, dict) and key in elem:
+                    v = elem[key]
+                    if isinstance(v, list):
+                        return v
+        return []
+
     def get_racecards(self, date_str: str) -> tuple[pd.DataFrame, pd.DataFrame]:
         """出走表とタイムテーブルを取得する (朝 9 時までに提供想定)。
 
@@ -123,10 +149,12 @@ class MastersDataClient:
             (timetable_df, runtable_df)
             timetable: place, race_num, start_time ("HH:MM") など
             runtable:  record_data と同型の当日出走馬データ (結果列は空)
+
+        レスポンス形式は _unwrap_data 参照 (dict / list ラップの両対応)。
         """
         data = self._get("Racecards", date_str)
-        timetable = pd.DataFrame(data["data"]["timetable"])
-        runtable = pd.DataFrame(data["data"]["runtable"])
+        timetable = pd.DataFrame(self._unwrap_data(data, "timetable"))
+        runtable = pd.DataFrame(self._unwrap_data(data, "runtable"))
         # 血統登録番号を record_data と同じ 10 桁に揃える (サンプル準拠)
         if "id" in runtable.columns:
             runtable["id"] = pd.to_numeric(runtable["id"], errors="coerce").fillna(0).astype("int64")
@@ -144,7 +172,7 @@ class MastersDataClient:
             (odds_type=1 が単勝)
         """
         data = self._get("Odds", odds_race_id)
-        return pd.DataFrame(data["data"]["odds_rt"])
+        return pd.DataFrame(self._unwrap_data(data, "odds_rt"))
 
     def get_win_odds(self, odds_race_id: str) -> pd.DataFrame:
         """単勝オッズのみに絞って返す (comb=馬番ゼロ埋め2桁, odds=float)。"""

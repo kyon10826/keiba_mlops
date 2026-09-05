@@ -111,6 +111,11 @@ DEFAULT_LIVE_STRATEGY = {
     "races_per_day_est": 36,        # 1 日の想定レース数
     "fav_rate_est": 0.06,           # top-1 がオッズ≤1.5 になるレースの想定割合
     "remaining_days_default": 9,    # コンペ残り日数 (state で自動更新されるが初期値)
+    # 大口 chunking (仕様バグ回避): 単発で N,NNN pt を送ると status=OK だが差引されない
+    # 事象 (8/30 24,700pt, 9/5 31,100pt) に対応。fav_big をチャンクに分けて送る。
+    # 100pt は必ず成立するので、chunk_size を小さくすれば確実に累計投票が積める。
+    "fav_big_chunk_size": 1000,     # 1 チャンクあたりの金額 (0 = 分割せず単発送信)
+    "fav_big_chunk_max_time_sec": 100,  # 全チャンク送信にかける最大秒数 (締切前予算)
     # --- 穴狙いサブベット (毎レース、10 倍以上で model 確率が閾値以上なら 100pt) ---
     # 目的: 収支の上振れ余地を作る。1 レース +100pt、~30% で発火 = 1 日 ~30 * 100 = 3,000pt。
     # 9 日で ~27,000pt を使うが、期待値は「モデル確率が校正されている」前提で±0 前後。
@@ -751,10 +756,18 @@ def main():
     # favorite_concentration の大口額を残り日数から動的計算 (朝に 1 回)
     big_amount = compute_big_amount(strat, state, date_str)
     if strat.get("mode", "favorite_concentration") == "favorite_concentration":
+        fav_cap = float(strat["fav_max_odds"])
+        chunk = int(strat.get("fav_big_chunk_size", 0))
+        if fav_cap <= 0:
+            big_desc = "大口 [無効化]"
+        elif chunk > 0:
+            n_chunks = max(1, big_amount // chunk)
+            big_desc = f"大口 {big_amount:,} pt (chunk {chunk} pt × {n_chunks} 回、オッズ≤{fav_cap:.1f})"
+        else:
+            big_desc = f"大口 {big_amount:,} pt (単発、オッズ≤{fav_cap:.1f})"
         logger.info(
-            "戦略: favorite_concentration | 最低額 %d pt/レース + オッズ≤%.1f の大口 %d pt "
-            "(目標累計 %s pt, 現在 %s pt)",
-            int(strat["min_bet_per_race"]), float(strat["fav_max_odds"]), big_amount,
+            "戦略: favorite_concentration | 最低額 %d pt/レース + %s (目標累計 %s pt, 現在 %s pt)",
+            int(strat["min_bet_per_race"]), big_desc,
             f"{int(strat['target_total_wagered']):,}", f"{state['total_wagered']:,}",
         )
 
@@ -826,14 +839,64 @@ def main():
 
         # 投票実行 (締切 = 発走 bet_deadline_sec 前。それまでの間はリトライ可)
         deadline_ts = target.timestamp() - float(strat["bet_deadline_sec"])
-        try:
-            result = vote_client.place_win_bet(
-                race_id_vote, decision["horse_num"], decision["amount"],
-                deadline_ts=None if args.skip_wait else deadline_ts,
+        # fav_big の場合、単発大口は API バグで無効化される事象があるため
+        # fav_big_chunk_size に従って複数回に分けて送る。100pt は必ず成立する仕様。
+        chunk_size = int(strat.get("fav_big_chunk_size", 0))
+        is_fav_big = decision.get("bet_kind") == "fav_big"
+        if is_fav_big and chunk_size > 0 and decision["amount"] > chunk_size:
+            total = int(decision["amount"])
+            unit = int(strat["min_bet_unit"])
+            chunk = (chunk_size // unit) * unit
+            n_full = total // chunk
+            rem = total - n_full * chunk
+            chunks = [chunk] * n_full + ([rem] if rem >= unit else [])
+            logger.info(
+                "%s %dR: [fav_big] 馬番%d を %d pt × %d 回に分割して送信 (合計 %d pt)",
+                place, race_num, decision["horse_num"], chunk, len(chunks), total,
             )
-        except Exception as e:
-            logger.error("%s %dR: 投票失敗 (%s)", place, race_num, e)
-            continue
+            actual_amount = 0
+            fail_count = 0
+            budget = float(strat.get("fav_big_chunk_max_time_sec", 100))
+            t0 = time.time()
+            first_result = None
+            for i, amt in enumerate(chunks):
+                if time.time() - t0 > budget:
+                    logger.warning("chunk 時間予算超過、%d/%d で打切", i, len(chunks))
+                    break
+                if deadline_ts and not args.skip_wait and time.time() >= deadline_ts:
+                    logger.warning("chunk 締切超過、%d/%d で打切", i, len(chunks))
+                    break
+                try:
+                    r = vote_client.place_win_bet(
+                        race_id_vote, decision["horse_num"], amt,
+                        deadline_ts=None if args.skip_wait else deadline_ts,
+                    )
+                    actual_amount += amt
+                    if first_result is None:
+                        first_result = r
+                    else:
+                        first_result = r  # 最後の残高を採用
+                except Exception as e:
+                    fail_count += 1
+                    logger.warning("chunk %d/%d 失敗: %s", i+1, len(chunks), e)
+                    if fail_count >= 3:
+                        logger.error("chunk 連続失敗 3 回で打切")
+                        break
+            if first_result is None:
+                logger.error("%s %dR: fav_big 全 chunk 失敗", place, race_num)
+                continue
+            # decision の amount を実際に成立した合計に更新
+            decision["amount"] = actual_amount
+            result = first_result
+        else:
+            try:
+                result = vote_client.place_win_bet(
+                    race_id_vote, decision["horse_num"], decision["amount"],
+                    deadline_ts=None if args.skip_wait else deadline_ts,
+                )
+            except Exception as e:
+                logger.error("%s %dR: 投票失敗 (%s)", place, race_num, e)
+                continue
 
         if result.remaining_points is not None:
             state["remaining_points"] = result.remaining_points
