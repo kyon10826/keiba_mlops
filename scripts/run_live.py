@@ -917,8 +917,30 @@ def main():
                 deadline_ts=None if args.skip_wait else deadline_ts,
             )
         except Exception as e:  # noqa: BLE001
-            logger.error("%s %dR: 投票失敗 (%s)", place, race_num, e)
-            continue
+            # multi (三連複/三連単) の bet_id 形式が拒否された場合、
+            # 1 買い目でも NG だと配列全体が処理されないので、multi を除いた
+            # 単勝のみの entries で再送信する (primary + anaba は確実に通す)
+            err_str = str(e)
+            multi_kinds = ("trio", "trifecta", "exacta", "quinella")
+            has_multi = any(e2["meta"]["bet_kind"] in multi_kinds for e2 in entries)
+            if has_multi and ("kaime" in err_str or "bet error" in err_str):
+                fallback = [e2 for e2 in entries if e2["meta"]["bet_kind"] not in multi_kinds]
+                logger.warning(
+                    "%s %dR: multi 拒否のため単勝のみで再送 (%d → %d 買い目)",
+                    place, race_num, len(entries), len(fallback),
+                )
+                try:
+                    result = vote_client.place_race_bets(
+                        race_id_vote, fallback,
+                        deadline_ts=None if args.skip_wait else deadline_ts,
+                    )
+                    entries = fallback  # 以降のログ・state 更新も fallback ベースで
+                except Exception as e2:
+                    logger.error("%s %dR: fallback も失敗 (%s)", place, race_num, e2)
+                    continue
+            else:
+                logger.error("%s %dR: 投票失敗 (%s)", place, race_num, e)
+                continue
         if result is None:
             continue
 

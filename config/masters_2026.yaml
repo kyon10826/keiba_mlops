@@ -123,7 +123,7 @@ live:
   anaba_amount: 100
   anaba_max_per_race: 1
   # 多重ベット (三連複・三連単) — 1 レース最大 3,000pt で上振れ狙い
-  multi_enabled: true
+  multi_enabled: false
   multi_bet_types: ["trio", "trifecta"]
   multi_top_n_trio: 4
   multi_top_n_trifecta: 4
