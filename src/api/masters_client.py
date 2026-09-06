@@ -661,6 +661,86 @@ class MastersVoteClient:
                     n_ok, len(bets), race_id_vote)
         return results
 
+    def place_race_bets(
+        self,
+        race_id_vote: str,
+        entries: list[dict],
+        deadline_ts: float | None = None,
+        max_attempts: int = 2,
+        retry_interval: float = 3.0,
+    ):
+        """1 レース分の全買い目 (単勝/複勝/三連単など) を 1 POST でまとめて送信。
+
+        大会仕様「締切内の再投票は上書き」= 同一 race_id への複数 POST は
+        累積されず前の投票を置き換える。したがって min + fav_big + anaba +
+        multi を別々に送ると最後の 1 件しか有効にならない (2026 実運用で確認)。
+        この関数は entries を単一の bet_data 配列にまとめて 1 POST で送る。
+
+        Args:
+            race_id_vote: 12 桁 race_id
+            entries: [{"bet_id": str, "amount": int, "meta": dict}, ...]
+                meta は logging 用 (bet_kind, horse_num, pred_prob, odds, ev)
+        Returns:
+            BetResult 互換 (成立した合計 amount と最新 remaining_points)
+        """
+        if not entries:
+            return None
+        # 最初の bet_id から代表馬番を取り出して mark を設定 (単勝ならそれで OK)
+        # meta.horse_num があればそれを優先
+        first_horse = str(int(entries[0].get("meta", {}).get("horse_num", 1)))
+        bet_data = {
+            "race_id": race_id_vote,
+            "mark": {first_horse: 1},
+            "bet": [
+                {"bet_id": e["bet_id"], "money": str(int(e["amount"]))}
+                for e in entries
+            ],
+        }
+        total_amount = sum(int(e["amount"]) for e in entries)
+
+        if self.dry_run:
+            logger.info("[DRY-RUN] race bets: %s", bet_data)
+            return BetResult(
+                ok=True, race_id_vote=race_id_vote, horse_num=0,
+                amount=total_amount, remaining_points=None,
+                raw_response={"dry_run": True, "bet_data": bet_data}, verified=None,
+            )
+
+        last_err: Exception | None = None
+        for attempt in range(max_attempts):
+            try:
+                access_token = self.login()
+                try:
+                    body = self.bet(bet_data, access_token)
+                finally:
+                    self.logout(access_token)
+                # data.list_error があれば個別買い目の可否を返す
+                partial_errors = []
+                if isinstance(body, dict):
+                    data = body.get("data")
+                    if isinstance(data, dict):
+                        partial_errors = data.get("list_error") or []
+                return BetResult(
+                    ok=True, race_id_vote=race_id_vote, horse_num=0,
+                    amount=total_amount,
+                    remaining_points=self._extract_remaining(body),
+                    raw_response={"body": body, "partial_errors": partial_errors},
+                    verified=None,
+                )
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                logger.warning(
+                    "place_race_bets attempt %d/%d failed (race=%s): %s",
+                    attempt + 1, max_attempts, race_id_vote, e,
+                )
+                if attempt >= max_attempts - 1:
+                    break
+                if deadline_ts is not None and time.time() + retry_interval >= deadline_ts:
+                    logger.error("締切迫るためリトライ中止 (race=%s)", race_id_vote)
+                    break
+                time.sleep(retry_interval)
+        raise RuntimeError(f"place_race_bets failed (race={race_id_vote}): {last_err}")
+
     def place_win_bet(
         self,
         race_id_vote: str,

@@ -114,7 +114,7 @@ DEFAULT_LIVE_STRATEGY = {
     # 大口 chunking (仕様バグ回避): 単発で N,NNN pt を送ると status=OK だが差引されない
     # 事象 (8/30 24,700pt, 9/5 31,100pt) に対応。fav_big をチャンクに分けて送る。
     # 100pt は必ず成立するので、chunk_size を小さくすれば確実に累計投票が積める。
-    "fav_big_chunk_size": 1000,     # 1 チャンクあたりの金額 (0 = 分割せず単発送信)
+    "fav_big_chunk_size": 0,        # 0 = chunking せず単発。1レース1POST 方式では上書き問題なし
     "fav_big_chunk_max_time_sec": 100,  # 全チャンク送信にかける最大秒数 (締切前予算)
     # --- 穴狙いサブベット (毎レース、10 倍以上で model 確率が閾値以上なら 100pt) ---
     # 目的: 収支の上振れ余地を作る。1 レース +100pt、~30% で発火 = 1 日 ~30 * 100 = 3,000pt。
@@ -837,143 +837,45 @@ def main():
             logger.info("%s %dR: 見送り", place, race_num)
             continue
 
-        # 投票実行 (締切 = 発走 bet_deadline_sec 前。それまでの間はリトライ可)
+        # 投票実行 (締切 = 発走 bet_deadline_sec 前)
         deadline_ts = target.timestamp() - float(strat["bet_deadline_sec"])
-        # fav_big の場合、単発大口は API バグで無効化される事象があるため
-        # fav_big_chunk_size に従って複数回に分けて送る。100pt は必ず成立する仕様。
-        chunk_size = int(strat.get("fav_big_chunk_size", 0))
-        is_fav_big = decision.get("bet_kind") == "fav_big"
-        if is_fav_big and chunk_size > 0 and decision["amount"] > chunk_size:
-            total = int(decision["amount"])
-            unit = int(strat["min_bet_unit"])
-            chunk = (chunk_size // unit) * unit
-            n_full = total // chunk
-            rem = total - n_full * chunk
-            chunks = [chunk] * n_full + ([rem] if rem >= unit else [])
-            logger.info(
-                "%s %dR: [fav_big] 馬番%d を %d pt × %d 回に分割して送信 (合計 %d pt)",
-                place, race_num, decision["horse_num"], chunk, len(chunks), total,
-            )
-            actual_amount = 0
-            fail_count = 0
-            budget = float(strat.get("fav_big_chunk_max_time_sec", 100))
-            t0 = time.time()
-            first_result = None
-            for i, amt in enumerate(chunks):
-                if time.time() - t0 > budget:
-                    logger.warning("chunk 時間予算超過、%d/%d で打切", i, len(chunks))
-                    break
-                if deadline_ts and not args.skip_wait and time.time() >= deadline_ts:
-                    logger.warning("chunk 締切超過、%d/%d で打切", i, len(chunks))
-                    break
-                try:
-                    r = vote_client.place_win_bet(
-                        race_id_vote, decision["horse_num"], amt,
-                        deadline_ts=None if args.skip_wait else deadline_ts,
-                    )
-                    actual_amount += amt
-                    if first_result is None:
-                        first_result = r
-                    else:
-                        first_result = r  # 最後の残高を採用
-                except Exception as e:
-                    fail_count += 1
-                    logger.warning("chunk %d/%d 失敗: %s", i+1, len(chunks), e)
-                    if fail_count >= 3:
-                        logger.error("chunk 連続失敗 3 回で打切")
-                        break
-            if first_result is None:
-                logger.error("%s %dR: fav_big 全 chunk 失敗", place, race_num)
-                continue
-            # decision の amount を実際に成立した合計に更新
-            decision["amount"] = actual_amount
-            result = first_result
-        else:
-            try:
-                result = vote_client.place_win_bet(
-                    race_id_vote, decision["horse_num"], decision["amount"],
-                    deadline_ts=None if args.skip_wait else deadline_ts,
-                )
-            except Exception as e:
-                logger.error("%s %dR: 投票失敗 (%s)", place, race_num, e)
-                continue
 
-        if result.remaining_points is not None:
-            state["remaining_points"] = result.remaining_points
-        if race_id_vote not in state["races_bet"]:
-            state["races_bet"].append(race_id_vote)
-        state["total_wagered"] += decision["amount"]
+        # --- 1 レース分の全買い目を集約 (single POST で送信、上書き問題を回避) ---
+        entries = []  # list of {bet_id, amount, meta}
 
-        record = {
-            "date": date_str, "place": place, "race_num": race_num,
-            "start_time": start_time, "race_id_vote": race_id_vote,
-            **decision,
-            "remaining_points": state["remaining_points"],
-            "verified": result.verified,
-            "dry_run": args.dry_run,
-        }
-        bet_records.append(record)
-        if not args.dry_run:
-            pending_verify.append(
-                (len(bet_records) - 1, race_id_vote, int(decision["horse_num"]),
-                 int(decision["amount"]), time.time()))
-        logger.info(
-            "%s %dR: [%s] 馬番%d に %d pt (prob=%.3f odds=%s ev=%s) 残=%s",
-            place, race_num, decision["bet_kind"], decision["horse_num"],
-            decision["amount"], decision["pred_prob"],
-            f"{decision['odds']:.1f}" if pd.notna(decision["odds"]) else "?",
-            f"{decision['ev']:.2f}" if pd.notna(decision["ev"]) else "?",
-            state["remaining_points"],
-        )
+        # ① primary (min or fav_big): 単勝 top-1
+        entries.append({
+            "bet_id": f"b1_c0_{int(decision['horse_num'])}",
+            "amount": int(decision["amount"]),
+            "meta": {
+                "bet_kind": decision["bet_kind"],
+                "horse_num": int(decision["horse_num"]),
+                "pred_prob": float(decision["pred_prob"]),
+                "odds": float(decision["odds"]) if pd.notna(decision.get("odds")) else float("nan"),
+                "ev": float(decision["ev"]) if pd.notna(decision.get("ev")) else float("nan"),
+            },
+        })
 
-        # 都度ログを書き出し (途中クラッシュ対策)
-        pd.DataFrame(bet_records).to_csv(bets_log_path, index=False)
-        with open(state_path, "w") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
-
-        # --- 穴狙いサブベット (100pt 独立) ---
+        # ② anaba: 別の単勝 (primary と同じ馬なら追加しない)
         anaba = decide_anaba_bet(
             race_rows, win_odds_df, strat,
-            exclude_horse_num=decision["horse_num"],
+            exclude_horse_num=int(decision["horse_num"]),
         )
         if anaba is not None:
-            try:
-                result2 = vote_client.place_win_bet(
-                    race_id_vote, anaba["horse_num"], anaba["amount"],
-                    deadline_ts=None if args.skip_wait else deadline_ts,
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning("%s %dR: 穴狙い投票失敗 (%s)", place, race_num, e)
-                result2 = None
-            if result2 is not None:
-                if result2.remaining_points is not None:
-                    state["remaining_points"] = result2.remaining_points
-                state["total_wagered"] += anaba["amount"]
-                # 同じ race_id_vote は races_bet に追加しない (レース数は増えない)
-                record2 = {
-                    "date": date_str, "place": place, "race_num": race_num,
-                    "start_time": start_time, "race_id_vote": race_id_vote,
-                    **anaba,
-                    "remaining_points": state["remaining_points"],
-                    "verified": None,
-                    "dry_run": args.dry_run,
-                }
-                bet_records.append(record2)
-                if not args.dry_run:
-                    pending_verify.append(
-                        (len(bet_records) - 1, race_id_vote, int(anaba["horse_num"]),
-                         int(anaba["amount"]), time.time()))
-                logger.info(
-                    "%s %dR: [anaba] 馬番%d に %d pt (prob=%.3f odds=%.1f ev=%.2f) 残=%s",
-                    place, race_num, anaba["horse_num"], anaba["amount"],
-                    anaba["pred_prob"], anaba["odds"], anaba["ev"],
-                    state["remaining_points"],
-                )
-                pd.DataFrame(bet_records).to_csv(bets_log_path, index=False)
-                with open(state_path, "w") as f:
-                    json.dump(state, f, ensure_ascii=False, indent=2)
+            entries.append({
+                "bet_id": f"b1_c0_{int(anaba['horse_num'])}",
+                "amount": int(anaba["amount"]),
+                "meta": {
+                    "bet_kind": "anaba",
+                    "horse_num": int(anaba["horse_num"]),
+                    "pred_prob": float(anaba["pred_prob"]),
+                    "odds": float(anaba["odds"]),
+                    "ev": float(anaba["ev"]),
+                },
+            })
 
-        # --- 多重ベット (三連複・三連単・馬単・馬連) ---
+        # ③ multi (三連複・三連単): 大会 API から全券種オッズを取得して EV フィルタ選定
+        multi_cands = []
         if strat.get("multi_enabled", False) and not args.replay:
             try:
                 all_odds = data_client.get_all_odds(race_id_odds)
@@ -987,83 +889,104 @@ def main():
                 multi_cands = select_multi_bets(
                     horse_nums_arr, win_probs_arr, all_odds, strat,
                 )
-                if multi_cands:
-                    # split=True: 1 買い目ずつ独立に送信 (bet_id 形式不明でも
-                    # 通ったものだけ集計、失敗したものはスキップ)
-                    try:
-                        results3 = vote_client.place_multi_bet(
-                            race_id_vote, multi_cands,
-                            deadline_ts=None if args.skip_wait else deadline_ts,
-                            use_padded_bet_id=bool(strat.get("multi_use_padded_bet_id", False)),
-                            split=True,
-                        )
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning("%s %dR: 多重ベット送信失敗 (%s)", place, race_num, e)
-                        results3 = []
-                    n_ok = 0; n_fail = 0
-                    for cand, res in zip(multi_cands, results3 or []):
-                        if res is None:
-                            n_fail += 1
-                            logger.warning(
-                                "%s %dR: [%s] 買い目 %s @%.1f (%d pt) → 拒否",
-                                place, race_num, cand.bet_type,
-                                "-".join(str(h) for h in cand.horses), cand.odds, cand.amount,
-                            )
-                            continue
-                        n_ok += 1
-                        if res.remaining_points is not None:
-                            state["remaining_points"] = res.remaining_points
-                        state["total_wagered"] += int(cand.amount)
-                        rec = {
-                            "date": date_str, "place": place, "race_num": race_num,
-                            "start_time": start_time, "race_id_vote": race_id_vote,
-                            "horse_num": cand.horses[0],
-                            "amount": int(cand.amount),
-                            "bet_kind": cand.bet_type,
-                            "pred_prob": cand.joint_prob,
-                            "odds": cand.odds,
-                            "ev": cand.ev,
-                            "remaining_points": state["remaining_points"],
-                            "verified": None,
-                            "dry_run": args.dry_run,
-                            "bet_id": cand.bet_id,
-                            "horses": "-".join(str(h) for h in cand.horses),
-                        }
-                        bet_records.append(rec)
-                        if not args.dry_run:
-                            pending_verify.append(
-                                (len(bet_records) - 1, race_id_vote, int(cand.horses[0]),
-                                 int(cand.amount), time.time()))
-                    if n_ok + n_fail > 0:
-                        logger.info(
-                            "%s %dR: [multi] 成立 %d / 拒否 %d (合計 %d pt) 残=%s",
-                            place, race_num, n_ok, n_fail,
-                            sum(int(c.amount) for c, r in zip(multi_cands, results3 or []) if r is not None),
-                            state["remaining_points"],
-                        )
-                        pd.DataFrame(bet_records).to_csv(bets_log_path, index=False)
-                        with open(state_path, "w") as f:
-                            json.dump(state, f, ensure_ascii=False, indent=2)
+                use_padded = bool(strat.get("multi_use_padded_bet_id", False))
+                for c in multi_cands:
+                    entries.append({
+                        "bet_id": c.bet_id_padded if use_padded else c.bet_id,
+                        "amount": int(c.amount),
+                        "meta": {
+                            "bet_kind": c.bet_type,
+                            "horse_num": int(c.horses[0]),
+                            "horses": "-".join(str(h) for h in c.horses),
+                            "pred_prob": float(c.joint_prob),
+                            "odds": float(c.odds),
+                            "ev": float(c.ev),
+                        },
+                    })
 
-        # --- balance-check: API remaining_money から total_wagered を実残ベースで補正 ---
-        # fav_big 24,700 が API 応答で成立したのに実際は差引されていなかった事象
-        # (8/30 新潟 11R) を検知するため、初期額 100 万 - API 残 を真実として上書き。
-        # これにより「引かれていない投票」を total_wagered に加算する事故を防ぐ。
+        # --- 単一 POST でまとめて送信 ---
+        total_amount = sum(int(e["amount"]) for e in entries)
+        logger.info(
+            "%s %dR: 送信予定 %d 買い目 合計 %d pt (min/fav_big + anaba %s + multi %d)",
+            place, race_num, len(entries), total_amount,
+            "有" if anaba is not None else "無", len(multi_cands),
+        )
+        try:
+            result = vote_client.place_race_bets(
+                race_id_vote, entries,
+                deadline_ts=None if args.skip_wait else deadline_ts,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error("%s %dR: 投票失敗 (%s)", place, race_num, e)
+            continue
+        if result is None:
+            continue
+
+        # 残高更新 (POST /bet 応答の remaining_money が真実)
+        if result.remaining_points is not None:
+            state["remaining_points"] = result.remaining_points
+
+        # partial_errors があれば警告
+        raw = result.raw_response or {}
+        partial_errors = raw.get("partial_errors") or []
+        if partial_errors:
+            logger.warning("%s %dR: 部分エラー: %s", place, race_num, partial_errors)
+
+        # races_bet と total_wagered を更新 (成立した合計として)
+        if race_id_vote not in state["races_bet"]:
+            state["races_bet"].append(race_id_vote)
+        state["total_wagered"] += total_amount
+
+        # 各 entry を bet_records に個別に記録
+        for e in entries:
+            meta = e["meta"]
+            rec = {
+                "date": date_str, "place": place, "race_num": race_num,
+                "start_time": start_time, "race_id_vote": race_id_vote,
+                "horse_num": meta["horse_num"],
+                "amount": int(e["amount"]),
+                "bet_kind": meta["bet_kind"],
+                "pred_prob": meta.get("pred_prob"),
+                "odds": meta.get("odds"),
+                "ev": meta.get("ev"),
+                "remaining_points": state["remaining_points"],
+                "verified": None,
+                "dry_run": args.dry_run,
+                "bet_id": e["bet_id"],
+                "horses": meta.get("horses", str(meta["horse_num"])),
+            }
+            bet_records.append(rec)
+            if not args.dry_run:
+                pending_verify.append(
+                    (len(bet_records) - 1, race_id_vote, meta["horse_num"],
+                     int(e["amount"]), time.time()))
+
+        logger.info(
+            "%s %dR: 送信完了 (成立 %d 買い目 %d pt / 部分エラー %d 件) 残=%s",
+            place, race_num, len(entries) - len(partial_errors), total_amount,
+            len(partial_errors), state["remaining_points"],
+        )
+
+        # ログを都度書き出し (途中クラッシュ対策)
+        pd.DataFrame(bet_records).to_csv(bets_log_path, index=False)
+        with open(state_path, "w") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+
+        # --- balance-check: API remaining_money から実引落を照合 ---
+        # single POST 方式では上書き問題が消えるはずだが、金額別の拒否がある可能性は残る
         INITIAL_BANKROLL = 1_000_000
         if state.get("remaining_points") is not None:
             actual = INITIAL_BANKROLL - int(state["remaining_points"])
             if abs(actual - state["total_wagered"]) >= 200:
                 logger.warning(
-                    "★残高不整合: total_wagered=%d, 実引落=%d (差 %+d pt)。"
-                    "投票が受理されたが差引されていない可能性。マイページで要確認",
-                    state["total_wagered"], actual,
-                    actual - state["total_wagered"],
+                    "★残高不整合: total_wagered=%d, 実引落=%d (差 %+d pt)",
+                    state["total_wagered"], actual, actual - state["total_wagered"],
                 )
-                state["total_wagered"] = actual  # 実残ベースに補正
+                state["total_wagered"] = actual
                 with open(state_path, "w") as f:
                     json.dump(state, f, ensure_ascii=False, indent=2)
 
-    # 残りの反映確認 (最後の投票から 60 秒以上あけてから全件)
+    # 残りの反映確認    # 残りの反映確認 (最後の投票から 60 秒以上あけてから全件)
     if pending_verify and not args.dry_run:
         wait = max(0.0, 60.0 - (time.time() - pending_verify[-1][4]))
         if wait > 0 and not args.skip_wait:
