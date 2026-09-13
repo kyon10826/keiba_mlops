@@ -421,7 +421,16 @@ def select_all_bets(
     """
     if odds_df is None or odds_df.empty:
         return []
-    amount = int(strat.get("all_bets_amount", 1000))
+    # 賭け金: scalar (全券種一律) or dict (券種別)。dict の _default は既定値
+    _amount_cfg = strat.get("all_bets_amount", 1000)
+    if isinstance(_amount_cfg, dict):
+        _amount_dict = {k: int(v) for k, v in _amount_cfg.items()}
+        _amount_default = int(_amount_dict.get("_default", 1000))
+    else:
+        _amount_dict = {}
+        _amount_default = int(_amount_cfg)
+    def _amount_for(bt: str) -> int:
+        return _amount_dict.get(bt, _amount_default)
     # 利益フィルタ: scalar なら全券種一律、dict なら券種別に上書き
     _min_profit_cfg = strat.get("all_bets_min_profit_if_hit", 100000)
     if isinstance(_min_profit_cfg, dict):
@@ -433,7 +442,7 @@ def select_all_bets(
     def _min_odds_for(bt: str) -> float:
         # amount × (odds - 1) >= min_profit → odds >= min_profit/amount + 1
         mp = _profit_dict.get(bt, _profit_default)
-        return mp / amount + 1.0
+        return mp / _amount_for(bt) + 1.0
     min_probs = strat.get("all_bets_min_prob", {})
     top_n = int(strat.get("all_bets_top_n", 6))
     max_bets = int(strat.get("all_bets_max_bets_per_race", 20))
@@ -514,7 +523,7 @@ def select_all_bets(
             if prob < min_probs.get("wide", 0.02): continue
             candidates.append(MultiBetCandidate(
                 bet_type="wide", horses=key,
-                joint_prob=prob, odds=o, ev=prob * o, amount=amount,
+                joint_prob=prob, odds=o, ev=prob * o, amount=_amount_for("wide"),
             ))
 
     # 枠連
@@ -532,7 +541,7 @@ def select_all_bets(
             if prob < min_probs.get("waku_rensho", 0.02): continue
             candidates.append(MultiBetCandidate(
                 bet_type="waku_rensho", horses=key,
-                joint_prob=prob, odds=o, ev=prob * o, amount=amount,
+                joint_prob=prob, odds=o, ev=prob * o, amount=_amount_for("waku_rensho"),
             ))
 
     # 馬連 / 馬単 / 三連複 / 三連単 (既存関数を使い回し)
@@ -547,7 +556,7 @@ def select_all_bets(
             if prob < min_probs.get("quinella", 0.005): continue
             candidates.append(MultiBetCandidate(
                 bet_type="quinella", horses=key,
-                joint_prob=prob, odds=o, ev=prob * o, amount=amount,
+                joint_prob=prob, odds=o, ev=prob * o, amount=_amount_for("quinella"),
             ))
     if any(k[0] == "exacta" for k in odds_map):
         edf = joint_probs_exacta(win_probs, top_n=top_n)
@@ -560,7 +569,7 @@ def select_all_bets(
             if prob < min_probs.get("exacta", 0.002): continue
             candidates.append(MultiBetCandidate(
                 bet_type="exacta", horses=key,
-                joint_prob=prob, odds=o, ev=prob * o, amount=amount,
+                joint_prob=prob, odds=o, ev=prob * o, amount=_amount_for("exacta"),
             ))
     if any(k[0] == "trio" for k in odds_map):
         tdf = joint_probs_trio(win_probs, top_n=top_n)
@@ -573,7 +582,7 @@ def select_all_bets(
             if prob < min_probs.get("trio", 0.001): continue
             candidates.append(MultiBetCandidate(
                 bet_type="trio", horses=key,
-                joint_prob=prob, odds=o, ev=prob * o, amount=amount,
+                joint_prob=prob, odds=o, ev=prob * o, amount=_amount_for("trio"),
             ))
     if any(k[0] == "trifecta" for k in odds_map):
         tfdf = joint_probs_trifecta(win_probs, top_n=top_n)
@@ -586,7 +595,7 @@ def select_all_bets(
             if prob < min_probs.get("trifecta", 0.0005): continue
             candidates.append(MultiBetCandidate(
                 bet_type="trifecta", horses=key,
-                joint_prob=prob, odds=o, ev=prob * o, amount=amount,
+                joint_prob=prob, odds=o, ev=prob * o, amount=_amount_for("trifecta"),
             ))
 
     # EV 順に上位を返す (件数制限)
