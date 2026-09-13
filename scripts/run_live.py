@@ -936,8 +936,19 @@ def main():
                 waku_arr = None
                 if "waku_num" in sorted_rows.columns:
                     waku_arr = sorted_rows["waku_num"].astype(int).to_numpy()
+                # レースコンテキスト (特徴量ベース EV 調整で使う)
+                race_ctx = {
+                    "field_size": len(sorted_rows),
+                    "class_grade": float(sorted_rows["class_grade"].iloc[0])
+                        if "class_grade" in sorted_rows.columns else 0.0,
+                    "track_type": int(sorted_rows["track_code"].iloc[0])
+                        if "track_code" in sorted_rows.columns else 1,
+                }
                 multi_cands = select_all_bets(
-                    horse_nums_arr, win_probs_arr, all_odds, strat, waku_nums=waku_arr,
+                    horse_nums_arr, win_probs_arr, all_odds, strat,
+                    waku_nums=waku_arr,
+                    features_df=sorted_rows,
+                    race_context=race_ctx,
                 )
                 use_padded = bool(strat.get("all_bets_use_padded_bet_id", True))
                 for c in multi_cands:

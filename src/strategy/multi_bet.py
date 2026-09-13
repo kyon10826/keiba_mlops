@@ -402,6 +402,8 @@ def select_all_bets(
     odds_df: pd.DataFrame,
     strat: dict,
     waku_nums: np.ndarray | None = None,
+    features_df: pd.DataFrame | None = None,
+    race_context: dict | None = None,
 ) -> list[MultiBetCandidate]:
     """全 7 券種 (複勝〜三連単) を横断的に評価し、利益フィルタで買い目を選定。
 
@@ -441,6 +443,21 @@ def select_all_bets(
     _min_ev = float(strat.get("all_bets_min_ev", 1.0))
     _scale_by_ev = bool(strat.get("all_bets_scale_by_ev", False))
     _max_ev_for_scale = float(strat.get("all_bets_ev_scale_max_ev", 5.0))
+
+    def _make_cand_if_valid(bt: str, horses: tuple[int, ...], prob: float, o: float, amt: int) -> MultiBetCandidate | None:
+        raw_ev = prob * o
+        # 馬番 → index
+        horses_idx = tuple(hnum_to_idx.get(int(h), -1) for h in horses)
+        horses_idx = tuple(i for i in horses_idx if i >= 0)
+        adj_ev, _p, _q = compute_adjusted_ev(
+            raw_ev, horses_idx, win_probs, features_df, race_context,
+        )
+        if adj_ev < _min_ev:
+            return None
+        return MultiBetCandidate(
+            bet_type=bt, horses=horses,
+            joint_prob=prob, odds=o, ev=raw_ev, amount=amt,
+        )
 
     def _amount_for(bt: str, ev: float = 1.0) -> int:
         """券種別の base と cap から実賭け金を決定 (100pt 単位に丸め)。
@@ -534,12 +551,9 @@ def select_all_bets(
             if o is None: continue
             prob = float(r["joint_prob"])
             if prob < min_probs.get("place", 0.10): continue
-            if prob * o < _min_ev:
-                continue
-            candidates.append(MultiBetCandidate(
-                bet_type="place", horses=(hn,),
-                joint_prob=prob, odds=o, ev=prob * o, amount=amount,
-            ))
+            _c = _make_cand_if_valid("place", (hn,), prob, o, _amount_for("place", ev=prob*o))
+            if _c is not None:
+                candidates.append(_c)
 
     # ワイド
     if any(k[0] == "wide" for k in odds_map):
@@ -551,12 +565,9 @@ def select_all_bets(
             if o is None: continue
             prob = float(r["joint_prob"])
             if prob < min_probs.get("wide", 0.02): continue
-            if prob * o < _min_ev:
-                continue
-            candidates.append(MultiBetCandidate(
-                bet_type="wide", horses=key,
-                joint_prob=prob, odds=o, ev=prob * o, amount=_amount_for("wide", ev=prob*o),
-            ))
+            _c = _make_cand_if_valid("wide", key, prob, o, _amount_for("wide", ev=prob*o))
+            if _c is not None:
+                candidates.append(_c)
 
     # 枠連
     if any(k[0] == "waku_rensho" for k in odds_map) and waku_nums is not None:
@@ -571,12 +582,9 @@ def select_all_bets(
             if o is None: continue
             prob = float(r["joint_prob"])
             if prob < min_probs.get("waku_rensho", 0.02): continue
-            if prob * o < _min_ev:
-                continue
-            candidates.append(MultiBetCandidate(
-                bet_type="waku_rensho", horses=key,
-                joint_prob=prob, odds=o, ev=prob * o, amount=_amount_for("waku_rensho", ev=prob*o),
-            ))
+            _c = _make_cand_if_valid("waku_rensho", key, prob, o, _amount_for("waku_rensho", ev=prob*o))
+            if _c is not None:
+                candidates.append(_c)
 
     # 馬連 / 馬単 / 三連複 / 三連単 (既存関数を使い回し)
     if any(k[0] == "quinella" for k in odds_map):
@@ -588,12 +596,9 @@ def select_all_bets(
             if o is None: continue
             prob = float(r["joint_prob"])
             if prob < min_probs.get("quinella", 0.005): continue
-            if prob * o < _min_ev:
-                continue
-            candidates.append(MultiBetCandidate(
-                bet_type="quinella", horses=key,
-                joint_prob=prob, odds=o, ev=prob * o, amount=_amount_for("quinella", ev=prob*o),
-            ))
+            _c = _make_cand_if_valid("quinella", key, prob, o, _amount_for("quinella", ev=prob*o))
+            if _c is not None:
+                candidates.append(_c)
     if any(k[0] == "exacta" for k in odds_map):
         edf = joint_probs_exacta(win_probs, top_n=top_n)
         for _, r in edf.iterrows():
@@ -603,12 +608,9 @@ def select_all_bets(
             if o is None: continue
             prob = float(r["joint_prob"])
             if prob < min_probs.get("exacta", 0.002): continue
-            if prob * o < _min_ev:
-                continue
-            candidates.append(MultiBetCandidate(
-                bet_type="exacta", horses=key,
-                joint_prob=prob, odds=o, ev=prob * o, amount=_amount_for("exacta", ev=prob*o),
-            ))
+            _c = _make_cand_if_valid("exacta", key, prob, o, _amount_for("exacta", ev=prob*o))
+            if _c is not None:
+                candidates.append(_c)
     if any(k[0] == "trio" for k in odds_map):
         tdf = joint_probs_trio(win_probs, top_n=top_n)
         for _, r in tdf.iterrows():
@@ -618,12 +620,9 @@ def select_all_bets(
             if o is None: continue
             prob = float(r["joint_prob"])
             if prob < min_probs.get("trio", 0.001): continue
-            if prob * o < _min_ev:
-                continue
-            candidates.append(MultiBetCandidate(
-                bet_type="trio", horses=key,
-                joint_prob=prob, odds=o, ev=prob * o, amount=_amount_for("trio", ev=prob*o),
-            ))
+            _c = _make_cand_if_valid("trio", key, prob, o, _amount_for("trio", ev=prob*o))
+            if _c is not None:
+                candidates.append(_c)
     if any(k[0] == "trifecta" for k in odds_map):
         tfdf = joint_probs_trifecta(win_probs, top_n=top_n)
         for _, r in tfdf.iterrows():
@@ -633,13 +632,121 @@ def select_all_bets(
             if o is None: continue
             prob = float(r["joint_prob"])
             if prob < min_probs.get("trifecta", 0.0005): continue
-            if prob * o < _min_ev:
-                continue
-            candidates.append(MultiBetCandidate(
-                bet_type="trifecta", horses=key,
-                joint_prob=prob, odds=o, ev=prob * o, amount=_amount_for("trifecta", ev=prob*o),
-            ))
+            _c = _make_cand_if_valid("trifecta", key, prob, o, _amount_for("trifecta", ev=prob*o))
+            if _c is not None:
+                candidates.append(_c)
 
     # EV 順に上位を返す (件数制限)
     candidates.sort(key=lambda c: c.ev, reverse=True)
     return candidates[:max_bets]
+
+
+
+# ============================================================================
+# 特徴量ベースの EV 調整
+# ============================================================================
+# モデルの win_pred_prob だけでは以下を捉えられない:
+#   1. レース全体の予測しやすさ (荒れやすい下級戦 vs G1)
+#   2. 組合せの馬個別の "信頼度" (直近好調・不振)
+#   3. コース適性 (芝ダ切替、距離適性、騎手コース相性)
+# これらを heuristic な multiplier として EV に掛ける。
+
+
+def compute_race_predictability(
+    win_probs: np.ndarray,
+    class_grade: float = 0.0,
+    field_size: int = 14,
+    track_type: int = 1,
+) -> float:
+    """レース単位の予測信頼度 (0.5〜1.5)。
+
+    要素:
+      - 予測の集中度 (HHI): 上位馬に確率が偏っているほど信頼できる
+      - フィールドサイズ: 少頭数ほど予測しやすい
+      - クラス (class_grade): G1/重賞は選定馬の質が揃っており予測しやすい
+    """
+    win_probs = np.asarray(win_probs, dtype=np.float64)
+    n = max(len(win_probs), 1)
+    # HHI: uniform = 1/n、集中しているほど n 倍まで
+    hhi = float(np.sum(win_probs ** 2))
+    uniform = 1.0 / n
+    concentration = min(3.0, hhi / max(uniform, 1e-9)) / 3.0  # 0-1 に正規化
+    # class boost: 未勝利 ~0、G3 = 60、G1 = 100
+    class_factor = 1.0 + float(class_grade) / 200.0  # 0 → 1.0, 100 → 1.5
+    # field factor: 14 頭 baseline, ±頭数で調整
+    field_factor = 1.0 - (int(field_size) - 12) * 0.015
+    predictability = concentration * class_factor * field_factor
+    return float(max(0.5, min(1.5, predictability + 0.3)))  # baseline 0.3 加算
+
+
+def compute_combo_quality(
+    horses_idx: tuple[int, ...],
+    features_df: pd.DataFrame | None,
+    track_type: int = 1,
+) -> float:
+    """組合せの馬 quality (0.5〜1.5)。
+
+    使う特徴量 (存在すれば):
+      - show_rate_last_5: 直近 5 走の複勝率 → 直近好調度
+      - jockey_lcb95: 騎手複勝率のベイズ 95%下限 → 確実な腕
+      - sire_show_rate_turf/dirt: 種牡馬の芝/ダ適性 → 血統相性
+      - prize_zscore: レース内での賞金 Z スコア → 相対クラス
+    馬ごとに score 化し、組合せの平均を quality とする。
+    """
+    if features_df is None or len(features_df) == 0:
+        return 1.0
+    scores = []
+    is_turf = int(track_type) // 10 == 1  # track_code 10 の位が 1 なら芝
+    for i in horses_idx:
+        if i < 0 or i >= len(features_df):
+            continue
+        row = features_df.iloc[i]
+        # 各要素を [0, 1] に正規化して掛け合わせる
+        f_show = float(row.get("show_rate_last_5", 0.3))
+        f_jockey = float(row.get("jockey_lcb95", 0.15))
+        if is_turf:
+            f_sire = float(row.get("sire_show_rate_turf", 0.25))
+        else:
+            f_sire = float(row.get("sire_show_rate_dirt", 0.25))
+        f_prize = float(row.get("prize_zscore", 0.0))
+        # 中央値 (未勝利馬の水準) を 1.0 とする係数
+        score = (
+            (0.5 + f_show * 1.5)          # 0.5 (未走) 〜 2.0 (安定)
+            * (0.7 + f_jockey * 2.0)      # 0.7 (下手) 〜 1.5 (トップ)
+            * (0.8 + f_sire * 0.8)        # 0.8 (無適性) 〜 1.6 (完全適性)
+            * (1.0 + max(-0.5, min(0.5, f_prize)) * 0.2)  # Z-score で ±10%
+        )
+        scores.append(score)
+    if not scores:
+        return 1.0
+    avg = float(np.mean(scores))
+    # 正規化: 未勝利平均 ~1.0 想定、上限 1.5、下限 0.5
+    return float(max(0.5, min(1.5, avg / 1.5)))
+
+
+def compute_adjusted_ev(
+    raw_ev: float,
+    horses_idx: tuple[int, ...],
+    win_probs: np.ndarray,
+    features_df: pd.DataFrame | None,
+    race_context: dict | None = None,
+) -> tuple[float, float, float]:
+    """特徴量を使った EV 調整。
+
+    Returns:
+        (adjusted_ev, predictability, quality) — 診断のため 3 値を返す
+    adjusted_ev = raw_ev × race_predictability × combo_quality
+        - 荒れそうなレース (低 predictability) では EV を割り引く
+        - 好調馬同士の組合せ (高 quality) では EV を積み増す
+    """
+    ctx = race_context or {}
+    pred = compute_race_predictability(
+        win_probs,
+        class_grade=ctx.get("class_grade", 0),
+        field_size=ctx.get("field_size", len(win_probs)),
+        track_type=ctx.get("track_type", 1),
+    )
+    qual = compute_combo_quality(
+        horses_idx, features_df, track_type=ctx.get("track_type", 1)
+    )
+    return raw_ev * pred * qual, pred, qual
