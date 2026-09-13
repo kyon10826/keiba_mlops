@@ -429,8 +429,19 @@ def select_all_bets(
     else:
         _amount_dict = {}
         _amount_default = int(_amount_cfg)
+    # 上限クランプ (券種別 max)。5001pt 以上の投票を絶対に禁止する安全ガード
+    _max_cfg = strat.get("all_bets_max_amount", {})
+    if isinstance(_max_cfg, dict):
+        _max_dict = {k: int(v) for k, v in _max_cfg.items()}
+        _max_default = int(_max_dict.get("_default", 10**9))
+    else:
+        _max_dict = {}
+        _max_default = int(_max_cfg)
+
     def _amount_for(bt: str) -> int:
-        return _amount_dict.get(bt, _amount_default)
+        base = _amount_dict.get(bt, _amount_default)
+        cap = _max_dict.get(bt, _max_default)
+        return int(min(base, cap))
     # 利益フィルタ: scalar なら全券種一律、dict なら券種別に上書き
     _min_profit_cfg = strat.get("all_bets_min_profit_if_hit", 100000)
     if isinstance(_min_profit_cfg, dict):

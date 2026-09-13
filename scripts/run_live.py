@@ -157,15 +157,12 @@ DEFAULT_LIVE_STRATEGY = {
     # 超える買い目のみ実投票する。1000pt × (odds - 1) >= 100k → odds >= 101 の
     # 高配当だけを狙う "宝くじ戦略"。
     "all_bets_enabled": True,
-    "all_bets_amount": {                   # 券種別の 1 買い目 pt
-        "_default":    1000,
-        "place":       1000,
-        "waku_rensho": 1000,
-        "quinella":    1000,
-        "wide":        5000,               # ユーザー指示 9/13
-        "exacta":      1000,
-        "trio":        5000,               # ユーザー指示 9/13
-        "trifecta":    5000,               # ユーザー指示 9/13
+    "all_bets_amount": 1000,               # 基本 1 買い目 pt (100pt 単位)
+    "all_bets_max_amount": {               # 券種別の上限 (安全ガード、5001pt 以上禁止)
+        "_default":    10000,              # 通常券種は緩め
+        "wide":        5000,               # ユーザー指示 9/13: 5001pt 以上禁止
+        "trio":        5000,               # ユーザー指示 9/13: 5001pt 以上禁止
+        "trifecta":    5000,               # ユーザー指示 9/13: 5001pt 以上禁止
     },
     "all_bets_min_profit_if_hit": {        # 券種別の的中時利益の閾値 (pt)
         "_default":    100000,             # scalar なら全券種、dict ならこれが既定
