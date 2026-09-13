@@ -438,6 +438,7 @@ def select_all_bets(
         _max_dict = {}
         _max_default = int(_max_cfg)
 
+    _min_ev = float(strat.get("all_bets_min_ev", 1.0))
     _scale_by_ev = bool(strat.get("all_bets_scale_by_ev", False))
     _max_ev_for_scale = float(strat.get("all_bets_ev_scale_max_ev", 5.0))
 
@@ -533,6 +534,8 @@ def select_all_bets(
             if o is None: continue
             prob = float(r["joint_prob"])
             if prob < min_probs.get("place", 0.10): continue
+            if prob * o < _min_ev:
+                continue
             candidates.append(MultiBetCandidate(
                 bet_type="place", horses=(hn,),
                 joint_prob=prob, odds=o, ev=prob * o, amount=amount,
@@ -548,6 +551,8 @@ def select_all_bets(
             if o is None: continue
             prob = float(r["joint_prob"])
             if prob < min_probs.get("wide", 0.02): continue
+            if prob * o < _min_ev:
+                continue
             candidates.append(MultiBetCandidate(
                 bet_type="wide", horses=key,
                 joint_prob=prob, odds=o, ev=prob * o, amount=_amount_for("wide", ev=prob*o),
@@ -566,6 +571,8 @@ def select_all_bets(
             if o is None: continue
             prob = float(r["joint_prob"])
             if prob < min_probs.get("waku_rensho", 0.02): continue
+            if prob * o < _min_ev:
+                continue
             candidates.append(MultiBetCandidate(
                 bet_type="waku_rensho", horses=key,
                 joint_prob=prob, odds=o, ev=prob * o, amount=_amount_for("waku_rensho", ev=prob*o),
@@ -581,6 +588,8 @@ def select_all_bets(
             if o is None: continue
             prob = float(r["joint_prob"])
             if prob < min_probs.get("quinella", 0.005): continue
+            if prob * o < _min_ev:
+                continue
             candidates.append(MultiBetCandidate(
                 bet_type="quinella", horses=key,
                 joint_prob=prob, odds=o, ev=prob * o, amount=_amount_for("quinella", ev=prob*o),
@@ -594,6 +603,8 @@ def select_all_bets(
             if o is None: continue
             prob = float(r["joint_prob"])
             if prob < min_probs.get("exacta", 0.002): continue
+            if prob * o < _min_ev:
+                continue
             candidates.append(MultiBetCandidate(
                 bet_type="exacta", horses=key,
                 joint_prob=prob, odds=o, ev=prob * o, amount=_amount_for("exacta", ev=prob*o),
@@ -607,6 +618,8 @@ def select_all_bets(
             if o is None: continue
             prob = float(r["joint_prob"])
             if prob < min_probs.get("trio", 0.001): continue
+            if prob * o < _min_ev:
+                continue
             candidates.append(MultiBetCandidate(
                 bet_type="trio", horses=key,
                 joint_prob=prob, odds=o, ev=prob * o, amount=_amount_for("trio", ev=prob*o),
@@ -620,6 +633,8 @@ def select_all_bets(
             if o is None: continue
             prob = float(r["joint_prob"])
             if prob < min_probs.get("trifecta", 0.0005): continue
+            if prob * o < _min_ev:
+                continue
             candidates.append(MultiBetCandidate(
                 bet_type="trifecta", horses=key,
                 joint_prob=prob, odds=o, ev=prob * o, amount=_amount_for("trifecta", ev=prob*o),

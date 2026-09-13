@@ -173,6 +173,8 @@ DEFAULT_LIVE_STRATEGY = {
         "trio":        5000,               # ユーザー指示 9/13: 5001pt 以上禁止
         "trifecta":    5000,               # ユーザー指示 9/13: 5001pt 以上禁止
     },
+    "all_bets_min_ev": 1.0,                # EV = joint_prob × odds >= この値のみ通す
+                                           # (9/13 ユーザー指示: モデル確率を活かすため導入)
     "all_bets_scale_by_ev": True,          # ワイド/三連複/三連単は EV でスケール
     "all_bets_ev_scale_max_ev": 5.0,       # EV=5 で上限に到達 (線形補間)
     "all_bets_min_profit_if_hit": {        # 券種別の的中時利益の閾値 (pt)

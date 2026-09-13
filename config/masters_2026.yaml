@@ -151,6 +151,7 @@ live:
     wide: 5000              # ユーザー指示 9/13
     trio: 5000              # ユーザー指示 9/13
     trifecta: 5000          # ユーザー指示 9/13
+  all_bets_min_ev: 1.0                # EV = joint_prob × odds >= 1.0 のみ通す
   all_bets_scale_by_ev: true          # ワイド/三連複/三連単は EV でスケール
   all_bets_ev_scale_max_ev: 5.0       # EV=5 で上限に到達
   all_bets_min_profit_if_hit:
