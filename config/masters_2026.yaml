@@ -135,6 +135,13 @@ live:
   multi_max_bets_per_race: 6
   multi_max_total_per_race: 3000
   multi_use_padded_bet_id: false  # NG が返ったら true に切替
+  # 全券種スイープ (9/13〜、ユーザー指示による "宝くじ戦略")
+  all_bets_enabled: true
+  all_bets_amount: 1000
+  all_bets_min_profit_if_hit: 100000
+  all_bets_top_n: 6
+  all_bets_max_bets_per_race: 20
+  all_bets_use_padded_bet_id: true
   min_bet_unit: 100
   odds_fetch_before_sec: 250   # 発走 4分10秒前にオッズ取得 (サーバは 4分30秒前に更新)
   bet_deadline_sec: 180        # 投票締切は発走 3 分前

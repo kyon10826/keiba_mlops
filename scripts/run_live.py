@@ -74,7 +74,7 @@ from src.api.masters_client import (
     race_id_to_odds_id,
     race_id_to_vote_id,
 )
-from src.strategy.multi_bet import select_multi_bets
+from src.strategy.multi_bet import select_multi_bets, select_all_bets
 from src.scraper.race_card import scrape_shutuba_light
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -152,6 +152,25 @@ DEFAULT_LIVE_STRATEGY = {
     "multi_max_bets_per_race": 6,
     "multi_max_total_per_race": 3000,
     "multi_use_padded_bet_id": False,          # NG が返る場合 True に切替
+    # --- 全券種スイープ (複勝〜三連単、1000pt/買い目、利益 100k 以上フィルタ) ---
+    # ユーザー指示 (9/13): 各レースで全 7 券種を算出し、的中時利益が 10 万 pt を
+    # 超える買い目のみ実投票する。1000pt × (odds - 1) >= 100k → odds >= 101 の
+    # 高配当だけを狙う "宝くじ戦略"。
+    "all_bets_enabled": True,
+    "all_bets_amount": 1000,               # 1 買い目 pt (100pt 単位)
+    "all_bets_min_profit_if_hit": 100000,  # 的中時利益の閾値 (pt)
+    "all_bets_min_prob": {                 # 種別ごとの joint prob 下限 (超大穴除外)
+        "place": 0.10,
+        "waku_rensho": 0.01,
+        "quinella": 0.003,
+        "wide": 0.02,
+        "exacta": 0.001,
+        "trio": 0.0005,
+        "trifecta": 0.0002,
+    },
+    "all_bets_top_n": 6,
+    "all_bets_max_bets_per_race": 20,      # 1 レース最大点数 (1000 × 20 = 20,000pt/R 上限)
+    "all_bets_use_padded_bet_id": True,    # 9/6 の kaime エラーを回避 (b7_c0_010203 形式)
     # --- hybrid (旧方式) 用 ---
     "win_prob_min": 0.10,
     "min_ev": 1.05,
@@ -874,9 +893,9 @@ def main():
                 },
             })
 
-        # ③ multi (三連複・三連単): 大会 API から全券種オッズを取得して EV フィルタ選定
+        # ③ 全券種スイープ (複勝〜三連単) — 利益 >= 100k pt の買い目のみ追加
         multi_cands = []
-        if strat.get("multi_enabled", False) and not args.replay:
+        if strat.get("all_bets_enabled", False) and not args.replay:
             try:
                 all_odds = data_client.get_all_odds(race_id_odds)
             except Exception as e:  # noqa: BLE001
@@ -886,9 +905,37 @@ def main():
                 sorted_rows = race_rows.sort_values("horse_num").reset_index(drop=True)
                 horse_nums_arr = sorted_rows["horse_num"].astype(int).to_numpy()
                 win_probs_arr = sorted_rows["win_pred_prob"].to_numpy()
-                multi_cands = select_multi_bets(
-                    horse_nums_arr, win_probs_arr, all_odds, strat,
+                waku_arr = None
+                if "waku_num" in sorted_rows.columns:
+                    waku_arr = sorted_rows["waku_num"].astype(int).to_numpy()
+                multi_cands = select_all_bets(
+                    horse_nums_arr, win_probs_arr, all_odds, strat, waku_nums=waku_arr,
                 )
+                use_padded = bool(strat.get("all_bets_use_padded_bet_id", True))
+                for c in multi_cands:
+                    entries.append({
+                        "bet_id": c.bet_id_padded if use_padded else c.bet_id,
+                        "amount": int(c.amount),
+                        "meta": {
+                            "bet_kind": c.bet_type,
+                            "horse_num": int(c.horses[0]),
+                            "horses": "-".join(str(h) for h in c.horses),
+                            "pred_prob": float(c.joint_prob),
+                            "odds": float(c.odds),
+                            "ev": float(c.ev),
+                        },
+                    })
+        elif strat.get("multi_enabled", False) and not args.replay:
+            # 従来 multi (三連複・三連単のみ、EV フィルタ) — all_bets が優先
+            try:
+                all_odds = data_client.get_all_odds(race_id_odds)
+            except Exception as e:  # noqa: BLE001
+                all_odds = pd.DataFrame(columns=["comb", "odds_type", "odds"])
+            if not all_odds.empty:
+                sorted_rows = race_rows.sort_values("horse_num").reset_index(drop=True)
+                horse_nums_arr = sorted_rows["horse_num"].astype(int).to_numpy()
+                win_probs_arr = sorted_rows["win_pred_prob"].to_numpy()
+                multi_cands = select_multi_bets(horse_nums_arr, win_probs_arr, all_odds, strat)
                 use_padded = bool(strat.get("multi_use_padded_bet_id", False))
                 for c in multi_cands:
                     entries.append({
