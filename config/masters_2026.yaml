@@ -137,12 +137,22 @@ live:
   multi_use_padded_bet_id: false  # NG が返ったら true に切替
   # 全券種スイープ (9/13〜、ユーザー指示による "宝くじ戦略")
   all_bets_enabled: true
-  all_bets_amount: 1000
-  all_bets_max_amount:      # 券種別上限 (5001pt 以上禁止の安全ガード)
+  all_bets_amount:          # 券種別の基本 1 買い目 pt (下限)
+    _default: 1000
+    place: 100              # 複勝 100pt 以上から
+    waku_rensho: 1000       # 枠連 1000pt 以上から
+    quinella: 1000          # 馬連 1000pt 以上から
+    exacta: 1000            # 馬単 1000pt 以上から
+    wide: 1000              # ワイド 1000〜5000pt
+    trio: 1000              # 三連複 1000〜5000pt
+    trifecta: 1000          # 三連単 1000〜5000pt
+  all_bets_max_amount:      # 券種別の上限 (安全ガード)
     _default: 10000
     wide: 5000              # ユーザー指示 9/13
     trio: 5000              # ユーザー指示 9/13
     trifecta: 5000          # ユーザー指示 9/13
+  all_bets_scale_by_ev: true          # ワイド/三連複/三連単は EV でスケール
+  all_bets_ev_scale_max_ev: 5.0       # EV=5 で上限に到達
   all_bets_min_profit_if_hit:
     _default: 100000
     place: 100000
