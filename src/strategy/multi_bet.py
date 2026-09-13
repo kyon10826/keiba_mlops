@@ -422,9 +422,18 @@ def select_all_bets(
     if odds_df is None or odds_df.empty:
         return []
     amount = int(strat.get("all_bets_amount", 1000))
-    min_profit = float(strat.get("all_bets_min_profit_if_hit", 100000))
-    # amount × (odds - 1) >= min_profit → odds >= min_profit/amount + 1
-    min_odds = min_profit / amount + 1.0
+    # 利益フィルタ: scalar なら全券種一律、dict なら券種別に上書き
+    _min_profit_cfg = strat.get("all_bets_min_profit_if_hit", 100000)
+    if isinstance(_min_profit_cfg, dict):
+        _profit_dict = {k: float(v) for k, v in _min_profit_cfg.items()}
+        _profit_default = float(_profit_dict.get("_default", 100000))
+    else:
+        _profit_dict = {}
+        _profit_default = float(_min_profit_cfg)
+    def _min_odds_for(bt: str) -> float:
+        # amount × (odds - 1) >= min_profit → odds >= min_profit/amount + 1
+        mp = _profit_dict.get(bt, _profit_default)
+        return mp / amount + 1.0
     min_probs = strat.get("all_bets_min_prob", {})
     top_n = int(strat.get("all_bets_top_n", 6))
     max_bets = int(strat.get("all_bets_max_bets_per_race", 20))
@@ -463,7 +472,7 @@ def select_all_bets(
             o = float(row["odds"])
         except (ValueError, TypeError):
             continue
-        if o < min_odds: continue  # 利益フィルタ (奇数)
+        if o < _min_odds_for(bt): continue  # 利益フィルタ (券種別)
         # 順序不問系は昇順キー
         if bt in ("place", "waku_rensho", "quinella", "wide", "trio"):
             key = tuple(sorted(horses))

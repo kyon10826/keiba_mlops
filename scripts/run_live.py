@@ -158,7 +158,16 @@ DEFAULT_LIVE_STRATEGY = {
     # 高配当だけを狙う "宝くじ戦略"。
     "all_bets_enabled": True,
     "all_bets_amount": 1000,               # 1 買い目 pt (100pt 単位)
-    "all_bets_min_profit_if_hit": 100000,  # 的中時利益の閾値 (pt)
+    "all_bets_min_profit_if_hit": {        # 券種別の的中時利益の閾値 (pt)
+        "_default":    100000,             # scalar なら全券種、dict ならこれが既定
+        "place":       100000,
+        "waku_rensho": 100000,
+        "quinella":    100000,
+        "wide":        100000,
+        "exacta":      100000,
+        "trio":        100000,
+        "trifecta":    500000,             # 三連単だけ厳しく (ユーザー指示 9/13)
+    },
     "all_bets_min_prob": {                 # 種別ごとの joint prob 下限 (超大穴除外)
         "place": 0.10,
         "waku_rensho": 0.01,

@@ -138,7 +138,15 @@ live:
   # 全券種スイープ (9/13〜、ユーザー指示による "宝くじ戦略")
   all_bets_enabled: true
   all_bets_amount: 1000
-  all_bets_min_profit_if_hit: 100000
+  all_bets_min_profit_if_hit:
+    _default: 100000
+    place: 100000
+    waku_rensho: 100000
+    quinella: 100000
+    wide: 100000
+    exacta: 100000
+    trio: 100000
+    trifecta: 500000   # 三連単は 50 万 pt 以上の利益のみ (odds >= 501)
   all_bets_top_n: 6
   all_bets_max_bets_per_race: 20
   all_bets_use_padded_bet_id: true
