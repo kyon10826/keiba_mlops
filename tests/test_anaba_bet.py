@@ -19,6 +19,8 @@ from run_live import DEFAULT_LIVE_STRATEGY, decide_anaba_bet
 
 def strat(**over):
     s = dict(DEFAULT_LIVE_STRATEGY)
+    # DEFAULT で anaba は 9/18 廃止だがテストは有効前提
+    s["anaba_enabled"] = True
     s.update(over)
     return s
 

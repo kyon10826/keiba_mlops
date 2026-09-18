@@ -720,8 +720,8 @@ def compute_combo_quality(
     if not scores:
         return 1.0
     avg = float(np.mean(scores))
-    # 正規化: 未勝利平均 ~1.0 想定、上限 1.5、下限 0.5
-    return float(max(0.5, min(1.5, avg / 1.5)))
+    # クランプ: 未勝利平均 ~1.0 想定、上限 1.5、下限 0.5
+    return float(max(0.5, min(1.5, avg)))
 
 
 def compute_adjusted_ev(
@@ -750,3 +750,243 @@ def compute_adjusted_ev(
         horses_idx, features_df, track_type=ctx.get("track_type", 1)
     )
     return raw_ev * pred * qual, pred, qual
+
+
+
+# ============================================================================
+# 軸マルチ選定 (9/18 redesign): 軸 1 頭 + 相手 4 頭で三連複/三連単/馬単を組む
+# ============================================================================
+
+def compute_horse_quality(
+    feature_row: pd.Series,
+    track_type: int = 1,
+) -> float:
+    """1 頭の信頼度スコア (0.5-2.0)。combo_quality の per-horse 版。
+
+    使う特徴量: 直近成績・騎手ベイズ下限・種牡馬芝ダ適性・レース内相対クラス。
+    """
+    is_turf = int(track_type) // 10 == 1
+    f_show = float(feature_row.get("show_rate_last_5", 0.3))
+    f_jockey = float(feature_row.get("jockey_lcb95", 0.15))
+    if is_turf:
+        f_sire = float(feature_row.get("sire_show_rate_turf", 0.25))
+    else:
+        f_sire = float(feature_row.get("sire_show_rate_dirt", 0.25))
+    f_prize = float(feature_row.get("prize_zscore", 0.0))
+    score = (
+        (0.5 + f_show * 1.5)
+        * (0.7 + f_jockey * 2.0)
+        * (0.8 + f_sire * 0.8)
+        * (1.0 + max(-0.5, min(0.5, f_prize)) * 0.2)
+    )
+    return float(max(0.5, min(2.0, score)))
+
+
+def _passes_prefilter(race_context: dict, strat: dict) -> bool:
+    """事前フィルタ: 少頭数 OR 重賞 (Q13=a)。"""
+    ctx = race_context or {}
+    field_size = int(ctx.get("field_size", 14))
+    class_grade = float(ctx.get("class_grade", 0.0))
+    max_field = int(strat.get("axis_multi_max_field_size", 10))
+    min_class = float(strat.get("axis_multi_min_class_grade", 60.0))
+    return (field_size <= max_field) or (class_grade >= min_class)
+
+
+def _try_select_axis_multi(
+    horse_nums: np.ndarray,
+    win_probs: np.ndarray,
+    odds_df: pd.DataFrame,
+    strat: dict,
+    features_df: pd.DataFrame | None,
+    race_context: dict | None,
+    quality_threshold: float,
+) -> list[MultiBetCandidate]:
+    """指定閾値で発火判定を行い、軸マルチ買い目を生成する。"""
+    ctx = race_context or {}
+    predictability = compute_race_predictability(
+        win_probs,
+        class_grade=ctx.get("class_grade", 0.0),
+        field_size=ctx.get("field_size", len(win_probs)),
+        track_type=ctx.get("track_type", 1),
+    )
+
+    n_horses = len(horse_nums)
+    if n_horses < 5 or features_df is None:
+        return []
+
+    # 各馬の信頼度スコア = win_pred_prob × horse_quality
+    horse_scores = []
+    for i in range(n_horses):
+        try:
+            q = compute_horse_quality(features_df.iloc[i], ctx.get("track_type", 1))
+        except Exception:
+            q = 1.0
+        horse_scores.append(float(win_probs[i]) * q)
+    horse_scores = np.array(horse_scores)
+
+    # 発火判定: predictability × 平均 quality >= 閾値
+    top5_idx_by_score = np.argsort(horse_scores)[::-1][:5]
+    top5_qualities = []
+    for i in top5_idx_by_score:
+        try:
+            top5_qualities.append(
+                compute_horse_quality(features_df.iloc[i], ctx.get("track_type", 1))
+            )
+        except Exception:
+            top5_qualities.append(1.0)
+    avg_top5_quality = float(np.mean(top5_qualities))
+    avg_top5_quality = max(0.5, min(1.5, avg_top5_quality))
+    fire_score = predictability * avg_top5_quality
+    if fire_score < quality_threshold:
+        return []
+
+    # 軸 = top1、相手 = top2-5 (信頼度スコア順)
+    axis_idx = int(top5_idx_by_score[0])
+    partner_indices = [int(i) for i in top5_idx_by_score[1:5]]
+    axis_hnum = int(horse_nums[axis_idx])
+    partner_hnums = [int(horse_nums[i]) for i in partner_indices]
+
+    # オッズ辞書 (comb → odds)
+    def _split_comb(comb, k):
+        c = str(comb).strip()
+        if "-" in c:
+            return tuple(int(x) for x in c.split("-"))
+        if len(c) == 2 * k:
+            return tuple(int(c[i:i+2]) for i in range(0, len(c), 2))
+        return tuple()
+
+    odds_map: dict[tuple[str, tuple[int, ...]], float] = {}
+    type_map = {4: "quinella", 6: "exacta", 7: "trio", 8: "trifecta"}
+    key_size = {"quinella": 2, "exacta": 2, "trio": 3, "trifecta": 3}
+    for _, row in odds_df.iterrows():
+        try:
+            otype = int(row["odds_type"])
+        except (ValueError, TypeError, KeyError):
+            continue
+        bt = type_map.get(otype)
+        if bt is None:
+            continue
+        k = key_size[bt]
+        horses = _split_comb(row.get("comb"), k)
+        if len(horses) != k:
+            continue
+        try:
+            o = float(row["odds"])
+        except (ValueError, TypeError):
+            continue
+        if o <= 0:
+            continue
+        if bt in ("trio", "quinella"):
+            key = tuple(sorted(horses))
+        else:
+            key = tuple(horses)
+        odds_map[(bt, key)] = o
+
+    if not odds_map:
+        return []
+
+    # amount (Q17=b: 三連複 3000, 三連単 500, 馬単 500)
+    amt_trio = int(strat.get("axis_multi_amount_trio", 3000))
+    amt_trifecta = int(strat.get("axis_multi_amount_trifecta", 500))
+    amt_exacta = int(strat.get("axis_multi_amount_exacta", 500))
+    min_ev = float(strat.get("axis_multi_min_adjusted_ev", 1.0))
+
+    candidates: list[MultiBetCandidate] = []
+
+    def _add(bt, horses_tuple, amt):
+        # 軸馬 index → win_probs index に戻す
+        hnum_to_idx = {int(horse_nums[i]): i for i in range(n_horses)}
+        idx_tuple = tuple(hnum_to_idx.get(h, -1) for h in horses_tuple)
+        idx_tuple = tuple(i for i in idx_tuple if i >= 0)
+        # joint prob 計算
+        if bt == "trio":
+            from itertools import permutations
+            prob = sum(harville_probability(win_probs, i, j, k)
+                       for i, j, k in permutations(idx_tuple))
+        elif bt == "trifecta":
+            i, j, k = idx_tuple
+            prob = harville_probability(win_probs, i, j, k)
+        elif bt == "exacta":
+            i, j = idx_tuple
+            p_i, p_j = float(win_probs[i]), float(win_probs[j])
+            d = 1.0 - p_i
+            prob = p_i * (p_j / d) if p_i > 0 and p_j > 0 and d > 1e-9 else 0.0
+        else:
+            return
+        if prob <= 0:
+            return
+        if bt in ("trio",):
+            key = tuple(sorted(horses_tuple))
+        else:
+            key = tuple(horses_tuple)
+        o = odds_map.get((bt, key))
+        if o is None:
+            return
+        adjusted_ev, _p, _q = compute_adjusted_ev(
+            prob * o, idx_tuple, win_probs, features_df, race_context,
+        )
+        if adjusted_ev < min_ev:
+            return
+        candidates.append(MultiBetCandidate(
+            bet_type=bt, horses=horses_tuple,
+            joint_prob=prob, odds=o, ev=prob * o, amount=amt,
+        ))
+
+    # 三連複: 軸 + 相手 2 頭の組合せ (4C2 = 6 買い目)
+    from itertools import combinations as _combinations
+    for a, b in _combinations(partner_hnums, 2):
+        _add("trio", tuple(sorted([axis_hnum, a, b])), amt_trio)
+
+    # 三連単: 軸を 1 着に固定、相手 4 頭から順列 2 頭 = 4P2 = 12 買い目 (Q17=b)
+    from itertools import permutations as _permutations
+    for p1, p2 in _permutations(partner_hnums, 2):
+        _add("trifecta", (axis_hnum, p1, p2), amt_trifecta)
+
+    # 馬単: 軸→相手 4 + 相手→軸 4 = 8 買い目
+    for p in partner_hnums:
+        _add("exacta", (axis_hnum, p), amt_exacta)
+        _add("exacta", (p, axis_hnum), amt_exacta)
+
+    return candidates
+
+
+def select_axis_multi_bets(
+    horse_nums: np.ndarray,
+    win_probs: np.ndarray,
+    odds_df: pd.DataFrame,
+    strat: dict,
+    waku_nums: np.ndarray | None = None,
+    features_df: pd.DataFrame | None = None,
+    race_context: dict | None = None,
+) -> list[MultiBetCandidate]:
+    """9/18 redesign: 軸 1 頭 + 相手 4 頭マルチ形式で三連複/三連単/馬単を組む。
+
+    フロー (Round 4-5 で確定):
+      1. 事前フィルタ (少頭数 ≤ 10 OR class_grade ≥ 60) を通らないレースは即空リスト
+      2. 予測分布と特徴量から predictability × combo_quality の発火スコアを算出
+      3. 発火スコアが閾値 (既定 1.5) 未満なら閾値 1.2 で再試行 (Q18=b フォールバック)
+      4. 軸馬 = 信頼度スコア (win_prob × horse_quality) 最上位、相手 4 頭 = 2-5 位
+      5. 三連複 6 買い目 + 三連単 12 買い目 + 馬単 8 買い目 = 最大 26 買い目
+      6. adjusted_ev ≥ 1.0 の買い目のみ通す
+    """
+    # 事前フィルタ (Q11=d + Q13=a)
+    if not _passes_prefilter(race_context, strat):
+        return []
+
+    # 発火判定 + フォールバック (Q11=d, Q18=b)
+    primary_threshold = float(strat.get("axis_multi_fire_threshold", 1.5))
+    fallback_threshold = float(strat.get("axis_multi_fire_threshold_fallback", 1.2))
+    if not (features_df is not None and len(features_df) >= 5):
+        return []
+
+    cands = _try_select_axis_multi(
+        horse_nums, win_probs, odds_df, strat,
+        features_df, race_context, primary_threshold,
+    )
+    if not cands:
+        # フォールバック閾値で再試行
+        cands = _try_select_axis_multi(
+            horse_nums, win_probs, odds_df, strat,
+            features_df, race_context, fallback_threshold,
+        )
+    return cands

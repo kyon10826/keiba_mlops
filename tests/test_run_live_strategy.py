@@ -26,6 +26,8 @@ from run_live import (
 
 def make_strat(**over):
     strat = dict(DEFAULT_LIVE_STRATEGY)
+    # DEFAULT で fav_max_odds は 0.0 (9/18 廃止) だがテストは fav_big 有効前提
+    strat["fav_max_odds"] = 1.5
     strat.update(over)
     return strat
 

@@ -105,7 +105,7 @@ strategy:
 live:
   mode: "favorite_concentration"
   min_bet_per_race: 100        # 全レース top-1 への最低額 (96 レース制約を最安でクリア)
-  fav_max_odds: 3.5            # 大口対象: top-1 の 5 分前オッズがこの値以下
+  fav_max_odds: 0.0            # 9/18 redesign: fav_big 廃止
   # 大口 chunking (仕様バグ回避: 8/30 24,700pt, 9/5 31,100pt が単発だと差引されない)
   fav_big_chunk_size: 0        # 1 レース1 POST 方式なので chunk 不要
   fav_big_chunk_max_time_sec: 100  # 全 chunk 送信に許される最大時間 (秒)
@@ -116,7 +116,7 @@ live:
   races_per_day_est: 36
   fav_rate_est: 0.06           # top-1 がオッズ≤1.5 になる割合 (実測 ~6%)
   # 穴狙いサブベット (毎レース、10 倍以上 & 校正勝率 10% 以上なら 100pt 追加投票)
-  anaba_enabled: true
+  anaba_enabled: false     # 9/18 redesign: 廃止
   anaba_min_odds: 10.0
   anaba_max_odds: 50.0
   anaba_min_prob: 0.05
@@ -136,7 +136,7 @@ live:
   multi_max_total_per_race: 3000
   multi_use_padded_bet_id: false  # NG が返ったら true に切替
   # 全券種スイープ (9/13〜、ユーザー指示による "宝くじ戦略")
-  all_bets_enabled: true
+  all_bets_enabled: false  # 9/18 redesign: axis_multi へ移行
   all_bets_amount:          # 券種別の基本 1 買い目 pt (下限)
     _default: 1000
     place: 100              # 複勝 100pt 以上から
@@ -175,3 +175,14 @@ scraper:
   race_url: "https://race.netkeiba.com"
   request_interval: 1.5
   cache_dir: "./cache"
+
+  # 軸マルチ (9/18 redesign): 軸 1 頭 + 相手 4 頭で 三連複/三連単/馬単
+  axis_multi_enabled: true
+  axis_multi_max_field_size: 10       # 少頭数の閾値
+  axis_multi_min_class_grade: 60.0    # G3 以上の重賞閾値
+  axis_multi_fire_threshold: 1.5      # 発火判定
+  axis_multi_fire_threshold_fallback: 1.2  # 発火不足時の緩和
+  axis_multi_amount_trio: 3000        # 三連複 1 買い目
+  axis_multi_amount_trifecta: 500     # 三連単 1 買い目
+  axis_multi_amount_exacta: 500       # 馬単 1 買い目
+  axis_multi_min_adjusted_ev: 1.0     # adjusted_ev 閾値

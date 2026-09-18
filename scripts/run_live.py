@@ -74,7 +74,7 @@ from src.api.masters_client import (
     race_id_to_odds_id,
     race_id_to_vote_id,
 )
-from src.strategy.multi_bet import select_multi_bets, select_all_bets
+from src.strategy.multi_bet import select_multi_bets, select_all_bets, select_axis_multi_bets
 from src.scraper.race_card import scrape_shutuba_light
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -103,7 +103,7 @@ DEFAULT_LIVE_STRATEGY = {
     "ev_max_bet": 20000,         # 1 ベット上限 (pt)
     # --- favorite_concentration 用 ---
     "min_bet_per_race": 100,        # 全レースに置く最低額 (レース数制約用)
-    "fav_max_odds": 1.5,            # 大口対象: top-1 の 5 分前オッズがこの値以下
+    "fav_max_odds": 0.0,            # 9/18 redesign: fav_big 廃止 (Q12=a)
     "fav_fallback_odds": 2.5,       # 終盤に投票額が不足しそうな場合の拡張帯
     "target_total_wagered": 510000, # 期間累計の目標投票額 (50 万制約 + バッファ)
     "big_amount_min": 5000,         # 大口の下限
@@ -125,7 +125,7 @@ DEFAULT_LIVE_STRATEGY = {
     #   ROI -11.4% ≒ 9 日で ~30k pt 使って期待損 ~3.5k pt (的中時に +3000pt 級)
     #   ※ min_prob を上げると ROI 悪化 (0.10 で -35.9%): モデルの穴推しは市場より弱い
     #   → デフォルトは「上振れ余地を残しつつ損失を最小化」の設定にした
-    "anaba_enabled": True,
+    "anaba_enabled": False,          # 9/18 redesign: 廃止 (Q15=a)
     "anaba_min_odds": 10.0,         # 10 倍以上 (ユーザー指定)
     "anaba_max_odds": 50.0,         # 50 倍まで許容 (バックテストで最良帯)
     "anaba_min_prob": 0.05,         # 校正後勝率 5% 以上 (緩め: 高くすると ROI 悪化)
@@ -156,7 +156,7 @@ DEFAULT_LIVE_STRATEGY = {
     # ユーザー指示 (9/13): 各レースで全 7 券種を算出し、的中時利益が 10 万 pt を
     # 超える買い目のみ実投票する。1000pt × (odds - 1) >= 100k → odds >= 101 の
     # 高配当だけを狙う "宝くじ戦略"。
-    "all_bets_enabled": True,
+    "all_bets_enabled": False,             # 9/18 redesign: axis_multi へ移行
     "all_bets_amount": {                   # 券種別の基本 1 買い目 pt (下限も兼ねる)
         "_default":    1000,
         "place":       100,                # 複勝は 100pt 以上から
@@ -199,6 +199,19 @@ DEFAULT_LIVE_STRATEGY = {
     "all_bets_top_n": 6,
     "all_bets_max_bets_per_race": 20,      # 1 レース最大点数 (1000 × 20 = 20,000pt/R 上限)
     "all_bets_use_padded_bet_id": True,    # 9/6 の kaime エラーを回避 (b7_c0_010203 形式)
+    # --- 軸マルチ (9/18 redesign): 軸 1 頭 + 相手 4 頭で 三連複/三連単/馬単 ---
+    # 事前フィルタ: 少頭数 OR 重賞 (モデル苦手領域を落とす)
+    # 発火判定: predictability × combo_quality >= 1.5 (足りなければ 1.2 で緩和)
+    # 買い目: 三連複 6 (3000pt) + 三連単 12 (500pt) + 馬単 8 (500pt) = 26 買い目、28k/R
+    "axis_multi_enabled": True,
+    "axis_multi_max_field_size": 10,        # 少頭数の閾値 (Q13=a)
+    "axis_multi_min_class_grade": 60.0,     # 重賞の閾値 (G3=60, G1=100)
+    "axis_multi_fire_threshold": 1.5,       # 発火スコア閾値 (predictability × quality)
+    "axis_multi_fire_threshold_fallback": 1.2,  # 発火不足時の緩和閾値 (Q18=b)
+    "axis_multi_amount_trio": 3000,         # 三連複 1 買い目
+    "axis_multi_amount_trifecta": 500,      # 三連単 1 買い目
+    "axis_multi_amount_exacta": 500,        # 馬単 1 買い目
+    "axis_multi_min_adjusted_ev": 1.0,      # adjusted_ev 閾値
     # --- hybrid (旧方式) 用 ---
     "win_prob_min": 0.10,
     "min_ev": 1.05,
@@ -921,9 +934,54 @@ def main():
                 },
             })
 
-        # ③ 全券種スイープ (複勝〜三連単) — 利益 >= 100k pt の買い目のみ追加
+        # ③ 軸マルチ選定 (9/18 redesign) — Q11-Q17 で確定した設計
         multi_cands = []
-        if strat.get("all_bets_enabled", False) and not args.replay:
+        if strat.get("axis_multi_enabled", False) and not args.replay:
+            try:
+                all_odds = data_client.get_all_odds(race_id_odds)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("%s %dR: 全券種オッズ取得失敗 (%s)", place, race_num, e)
+                all_odds = pd.DataFrame(columns=["comb", "odds_type", "odds"])
+            if not all_odds.empty:
+                sorted_rows = race_rows.sort_values("horse_num").reset_index(drop=True)
+                horse_nums_arr = sorted_rows["horse_num"].astype(int).to_numpy()
+                win_probs_arr = sorted_rows["win_pred_prob"].to_numpy()
+                waku_arr = None
+                if "waku_num" in sorted_rows.columns:
+                    waku_arr = sorted_rows["waku_num"].astype(int).to_numpy()
+                race_ctx = {
+                    "field_size": len(sorted_rows),
+                    "class_grade": float(sorted_rows["class_grade"].iloc[0])
+                        if "class_grade" in sorted_rows.columns else 0.0,
+                    "track_type": int(sorted_rows["track_code"].iloc[0])
+                        if "track_code" in sorted_rows.columns else 1,
+                }
+                multi_cands = select_axis_multi_bets(
+                    horse_nums_arr, win_probs_arr, all_odds, strat,
+                    waku_nums=waku_arr,
+                    features_df=sorted_rows,
+                    race_context=race_ctx,
+                )
+                logger.info(
+                    "%s %dR: axis_multi 生成 %d 買い目 (発火条件: 頭数 %d, class %.0f)",
+                    place, race_num, len(multi_cands),
+                    race_ctx["field_size"], race_ctx["class_grade"],
+                )
+                use_padded = bool(strat.get("all_bets_use_padded_bet_id", True))
+                for c in multi_cands:
+                    entries.append({
+                        "bet_id": c.bet_id_padded if use_padded else c.bet_id,
+                        "amount": int(c.amount),
+                        "meta": {
+                            "bet_kind": c.bet_type,
+                            "horse_num": int(c.horses[0]),
+                            "horses": "-".join(str(h) for h in c.horses),
+                            "pred_prob": float(c.joint_prob),
+                            "odds": float(c.odds),
+                            "ev": float(c.ev),
+                        },
+                    })
+        elif strat.get("all_bets_enabled", False) and not args.replay:
             try:
                 all_odds = data_client.get_all_odds(race_id_odds)
             except Exception as e:  # noqa: BLE001
